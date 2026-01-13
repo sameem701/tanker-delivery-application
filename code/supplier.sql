@@ -321,7 +321,7 @@ BEGIN
             'customer_name', u.name,
             'delivery_location', o.delivery_location,
             'requested_capacity', o.requested_capacity,
-            'customer_bid_price', o.customer_bid_price,
+            'customer_bid_price', o.customer_bid_price
         )
     ) INTO v_orders
     FROM orders o

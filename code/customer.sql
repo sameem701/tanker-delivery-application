@@ -13,7 +13,7 @@ CREATE OR REPLACE FUNCTION enter_details_customer(
 RETURNS JSON AS $$
 DECLARE
     v_address_exists BOOLEAN;
-    v_current_role VARCHAR(20);s
+    v_current_role VARCHAR(20);
 BEGIN
     -- Validate user_id
     IF p_user_id IS NULL THEN

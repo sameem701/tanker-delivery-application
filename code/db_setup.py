@@ -53,15 +53,28 @@ def main():
         # Connect to database
         conn = get_db_connection()
 
-        # Path to SQL files
+        # Path to SQL files directory
         project_root = Path(__file__).parent.parent
-        sql_file = project_root / "code" / "schema.sql"
+        sql_dir = project_root / "code"
 
-        # Execute SQL file
-        if sql_file.exists():
-            execute_sql_file(conn, sql_file)
-        else:
-            print(f"✗ SQL file not found: {sql_file}")
+        # Execute SQL files in specific order
+        # Order matters: schema first, then role-specific functions
+        sql_files = [
+            "schema.sql",  # Core tables, triggers, and auth functions
+            "customer.sql",  # Customer-specific functions
+            "supplier.sql",  # Supplier-specific functions
+            "driver.sql",  # Driver-specific functions
+        ]
+
+        print(f"\nExecuting {len(sql_files)} SQL files...")
+
+        for sql_filename in sql_files:
+            sql_file = sql_dir / sql_filename
+            if sql_file.exists():
+                execute_sql_file(conn, sql_file)
+            else:
+                print(f"✗ SQL file not found: {sql_file}")
+                raise FileNotFoundError(f"Required SQL file missing: {sql_filename}")
 
         # Close connection
         conn.close()

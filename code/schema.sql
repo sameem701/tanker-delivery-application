@@ -76,12 +76,6 @@ CREATE TABLE IF NOT EXISTS ORDERS (
     CONSTRAINT DRIVER_REQUIRES_SUPPLIER CHECK ((DRIVER_ID IS NULL) OR (SUPPLIER_ID IS NOT NULL))
 );
 
--- Create unique partial index: Only one open order per customer allowed
-CREATE UNIQUE INDEX idx_one_open_order_per_customer 
-ON ORDERS (CUSTOMER_ID) 
-WHERE STATUS = 'open';
-
-
 
 CREATE TABLE IF NOT EXISTS DRIVER_ASSIGNMENT (
     ORDER_ID INTEGER NOT NULL REFERENCES ORDERS(ORDER_ID) ON DELETE CASCADE,
@@ -169,6 +163,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trigger_unlink_driver_on_session_delete ON sessions;
 CREATE TRIGGER trigger_unlink_driver_on_session_delete
     AFTER DELETE ON sessions
     FOR EACH ROW
