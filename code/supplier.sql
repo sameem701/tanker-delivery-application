@@ -372,3 +372,200 @@ CREATE TRIGGER trigger_notify_orders_updated
     AFTER INSERT OR UPDATE OR DELETE ON orders
     FOR EACH ROW
     EXECUTE FUNCTION notify_orders_updated();
+
+
+
+
+
+-- ============================================================================
+-- FUNCTION: View specific order details for supplier
+-- ============================================================================
+-- Purpose: Returns details of a specific order if it has status 'open'
+--          Used when supplier clicks on an order to see full details
+-- Parameters:
+--   p_order_id: Order ID to view
+-- Returns: JSON object with order details or error
+-- Code: 1=Success, 0=Order not found or not open
+-- ============================================================================
+CREATE OR REPLACE FUNCTION view_order_details(
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_record RECORD;
+BEGIN
+    -- Validate order_id
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Get order details
+    SELECT 
+        order_id,
+        customer_id,
+        delivery_location,
+        requested_capacity,
+        customer_bid_price,
+        status
+    INTO v_order_record
+    FROM orders
+    WHERE order_id = p_order_id;
+    
+    -- Check if order exists
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found'
+        );
+    END IF;
+    
+    -- Check if order status is 'open'
+    IF v_order_record.status != 'open' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order is not available (status: ' || v_order_record.status || ')'
+        );
+    END IF;
+    
+    -- Return order details
+    RETURN json_build_object(
+        'code', 1,
+        'order_id', v_order_record.order_id,
+        'customer_id', v_order_record.customer_id,
+        'delivery_location', v_order_record.delivery_location,
+        'requested_capacity', v_order_record.requested_capacity,
+        'customer_bid_price', v_order_record.customer_bid_price
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to fetch order details: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Send bid for an order
+-- ============================================================================
+-- Purpose: Supplier places a bid on an open order
+--          Validates order is available (status='open' and supplier_id is NULL)
+-- Parameters:
+--   p_order_id: Order ID to bid on
+--   p_supplier_id: Supplier user_id placing the bid
+--   p_bid_price: Supplier's bid price
+-- Returns: JSON object with success status
+-- Code: 1=Success, 0=Failure/Order not available
+-- ============================================================================
+CREATE OR REPLACE FUNCTION send_bid(
+    p_order_id INTEGER,
+    p_supplier_id INTEGER,
+    p_bid_price INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_status VARCHAR(20);
+    v_order_supplier_id INTEGER;
+BEGIN
+    -- Validate inputs
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    IF p_supplier_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier ID cannot be null'
+        );
+    END IF;
+    
+    IF p_bid_price IS NULL OR p_bid_price <= 0 THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Bid price must be greater than 0'
+        );
+    END IF;
+    
+    -- Check order status and supplier_id
+    SELECT status, supplier_id INTO v_order_status, v_order_supplier_id
+    FROM orders
+    WHERE order_id = p_order_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found'
+        );
+    END IF;
+    
+    -- Check if order is open OR supplier_id is NULL
+    IF v_order_status != 'open' OR v_order_supplier_id IS NOT NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order is not available for bidding'
+        );
+    END IF;
+    
+    -- Insert bid into BIDS table
+    INSERT INTO BIDS (
+        ORDER_ID,
+        SUPPLIER_ID,
+        BID_PRICE,
+        CREATED_AT
+    ) VALUES (
+        p_order_id,
+        p_supplier_id,
+        p_bid_price,
+        CURRENT_TIMESTAMP
+    );
+    
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Bid placed successfully'
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to place bid: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- TRIGGER: Delete all bids when order status changes to 'supplier_timer'
+-- ============================================================================
+-- Purpose: When customer accepts a bid and order status becomes 'supplier_timer',
+--          automatically delete all other bids for that order
+-- ============================================================================
+CREATE OR REPLACE FUNCTION delete_bids_on_acceptance()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Check if status changed to 'supplier_timer'
+    IF NEW.status = 'supplier_timer' AND OLD.status != 'supplier_timer' THEN
+        -- Delete all bids for this order
+        DELETE FROM bids
+        WHERE order_id = NEW.order_id;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_delete_bids_on_acceptance
+    AFTER UPDATE ON orders
+    FOR EACH ROW
+    EXECUTE FUNCTION delete_bids_on_acceptance();
+
+
+

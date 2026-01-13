@@ -175,6 +175,10 @@ BEGIN
         );
     END IF;
     
+    -- Delete any existing open order for this customer
+    DELETE FROM ORDERS 
+    WHERE CUSTOMER_ID = p_customer_id AND STATUS = 'open';
+    
     -- Insert new order with status 'open'
     INSERT INTO ORDERS (
         CUSTOMER_ID,
@@ -207,3 +211,91 @@ EXCEPTION
         );
 END;
 $$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Accept supplier bid
+-- ============================================================================
+-- Purpose: Customer accepts a supplier's bid on their order
+--          Updates order with supplier details and changes status to 'supplier_timer'
+-- Parameters:
+--   p_bid_id: Bid ID to accept
+--   p_customer_id: Customer user_id (for validation)
+-- Returns: JSON object with success status
+-- Code: 1=Success, 0=Failure/Bid not found or invalid
+-- ============================================================================
+CREATE OR REPLACE FUNCTION accept_bid(
+    p_bid_id INTEGER,
+    p_customer_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_bid_record RECORD;
+    v_order_exists BOOLEAN;
+BEGIN
+    -- Validate inputs
+    IF p_bid_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Bid ID cannot be null'
+        );
+    END IF;
+    
+    IF p_customer_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Customer ID cannot be null'
+        );
+    END IF;
+    
+    -- Get bid details
+    SELECT order_id, supplier_id, bid_price INTO v_bid_record
+    FROM bids
+    WHERE bid_id = p_bid_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Bid not found'
+        );
+    END IF;
+    
+    -- Verify order belongs to customer AND is still open (combined check)
+    SELECT EXISTS(
+        SELECT 1 FROM orders
+        WHERE order_id = v_bid_record.order_id
+          AND customer_id = p_customer_id
+          AND status = 'open'
+    ) INTO v_order_exists;
+    
+    IF NOT v_order_exists THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order is not available for bid acceptance'
+        );
+    END IF;
+    
+    -- Update order with accepted bid details
+    UPDATE orders
+    SET supplier_id = v_bid_record.supplier_id,
+        accepted_price = v_bid_record.bid_price,
+        order_accepted_by_supplier_at = CURRENT_TIMESTAMP,
+        status = 'supplier_timer'
+    WHERE order_id = v_bid_record.order_id;
+    
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Bid accepted successfully'
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to accept bid: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+
