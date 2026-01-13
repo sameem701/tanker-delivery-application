@@ -1,0 +1,209 @@
+-- Purpose: Enter/update customer details (name and optional home address)
+-- Parameters:
+--   p_user_id: User ID
+--   p_name: Customer name
+--   p_home_address: Home address (optional, can be NULL or empty)
+-- Returns: JSON object with success status
+-- Code: 1=Success, 0=Failure/Already exists
+CREATE OR REPLACE FUNCTION enter_details_customer(
+    p_user_id INTEGER,
+    p_name VARCHAR(25),
+    p_home_address TEXT
+)
+RETURNS JSON AS $$
+DECLARE
+    v_address_exists BOOLEAN;
+    v_current_role VARCHAR(20);s
+BEGIN
+    -- Validate user_id
+    IF p_user_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'User ID cannot be null'
+        );
+    END IF;
+    
+    -- Check if user already has customer role
+    SELECT role INTO v_current_role
+    FROM users
+    WHERE user_id = p_user_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'User not found'
+        );
+    END IF;
+    
+    IF v_current_role = 'customer' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Customer already exists'
+        );
+    END IF;
+    
+    
+    -- Handle home address if provided
+    IF p_home_address IS NOT NULL AND TRIM(p_home_address) != '' THEN
+        -- Check if address record exists
+        SELECT EXISTS(SELECT 1 FROM customer_address WHERE user_id = p_user_id) INTO v_address_exists;
+        
+        IF v_address_exists THEN
+            -- Update existing address
+            UPDATE customer_address
+            SET home_address = TRIM(p_home_address)
+            WHERE user_id = p_user_id;
+        ELSE
+            -- Insert new address
+            INSERT INTO customer_address (user_id, home_address)
+            VALUES (p_user_id, TRIM(p_home_address));
+        END IF;
+    END IF;
+    
+     -- Update user name and set role to customer
+    UPDATE users
+    SET name = TRIM(p_name),
+        role = 'customer'
+    WHERE user_id = p_user_id;
+   
+
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Customer details saved successfully'
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to save details: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+---------------------------------------
+--              ORDERS
+---------------------------------------
+
+CREATE OR REPLACE FUNCTION START_ORDER (
+    p_customer_id INTEGER,
+    p_delivery_location TEXT,
+    p_requested_capacity NUMERIC (5,0),
+    p_customer_bid_price NUMERIC (7,0)
+)
+RETURNS JSON AS $$
+DECLARE
+    v_customer_role VARCHAR(20);
+    v_new_order_id INTEGER;
+    v_base_price INTEGER;
+    v_min_price NUMERIC(10,2);
+    v_max_price NUMERIC(10,2);
+BEGIN
+    -- Validate customer_id
+    IF p_customer_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Customer ID cannot be null'
+        );
+    END IF;
+    
+    -- Check if user exists and has customer role
+    SELECT role INTO v_customer_role
+    FROM users
+    WHERE user_id = p_customer_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'User not found'
+        );
+    END IF;
+    
+    IF v_customer_role != 'customer' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'User is not a customer'
+        );
+    END IF;
+    
+    -- Validate delivery location
+    IF p_delivery_location IS NULL OR TRIM(p_delivery_location) = '' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Delivery location cannot be empty'
+        );
+    END IF;
+    
+    -- Validate requested capacity exists in quantity_pricing table
+    IF p_requested_capacity IS NULL OR p_requested_capacity <= 0 THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Requested capacity must be greater than 0'
+        );
+    END IF;
+    
+    -- Check if requested capacity is one of the allowed quantities
+    SELECT base_price INTO v_base_price
+    FROM quantity_pricing
+    WHERE quantity_in_gallon = p_requested_capacity;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Invalid quantity. Please select from available options'
+     );
+    END IF;
+    
+    -- Calculate min and max allowed bid prices (85% to 300% of base price)
+    v_min_price := v_base_price * 0.85;
+    v_max_price := v_base_price * 3.0;
+    
+    -- Validate customer bid price
+    IF p_customer_bid_price IS NULL OR p_customer_bid_price <= 0 THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Bid price must be greater than 0'
+        );
+    END IF;
+    
+    -- Check if bid price is within allowed range
+    IF p_customer_bid_price < v_min_price OR p_customer_bid_price > v_max_price THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Incorrect pricing'
+        );
+    END IF;
+    
+    -- Insert new order with status 'open'
+    INSERT INTO ORDERS (
+        CUSTOMER_ID,
+        DELIVERY_LOCATION,
+        REQUESTED_CAPACITY,
+        CUSTOMER_BID_PRICE,
+        STATUS,
+        CREATED_AT
+    ) VALUES (
+        p_customer_id,
+        TRIM(p_delivery_location),
+        p_requested_capacity,
+        p_customer_bid_price,
+        'open',
+        CURRENT_TIMESTAMP
+    )
+    RETURNING ORDER_ID INTO v_new_order_id;
+    
+    RETURN json_build_object(
+        'code', 1,
+        'order_id', v_new_order_id,
+        'message', 'Order created successfully'
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to create order: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
