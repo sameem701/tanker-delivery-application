@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS SUPPLIER_DRIVERS(
     DRIVER_PHONE_NUM VARCHAR(20) UNIQUE NOT NULL,       -- as specified by supplier
     SUPPLIER_USER_ID INT REFERENCES SUPPLIERS(USER_ID) ON DELETE CASCADE,
     DRIVER_USER_ID INTEGER UNIQUE  REFERENCES USERS(USER_ID) ON DELETE SET NULL DEFAULT NULL,
+    AVAILABLE BOOLEAN DEFAULT TRUE,
     JOINED_AT TIMESTAMP,
     PRIMARY KEY (DRIVER_PHONE_NUM, SUPPLIER_USER_ID)
 );
@@ -67,10 +68,10 @@ CREATE TABLE IF NOT EXISTS ORDERS (
     DELIVERY_LOCATION TEXT NOT NULL,
     REQUESTED_CAPACITY NUMERIC(5,0) NOT NULL CHECK (REQUESTED_CAPACITY > 0),
     CUSTOMER_BID_PRICE NUMERIC(10,0) NOT NULL CHECK (CUSTOMER_BID_PRICE > 0),
-    ORDER_ACCEPTED_BY_SUPPLIER_AT TIMESTAMP,
+    TIME_LIMIT_FOR_SUPPLIER TIMESTAMP,
     ACCEPTED_PRICE NUMERIC(10,0),
     ORDER_CONFIRMED_AT TIMESTAMP,
-    STATUS VARCHAR(20) DEFAULT 'open' NOT NULL CHECK (STATUS IN ('open', 'supplier_timer', 'supplier_failed', 'accepted', 'cancelled', 'finished')),
+    STATUS VARCHAR(20) DEFAULT 'open' NOT NULL CHECK (STATUS IN ('open', 'supplier_timer', 'supplier_failed', 'accepted','finished')),
     CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT DRIVER_REQUIRES_SUPPLIER CHECK ((DRIVER_ID IS NULL) OR (SUPPLIER_ID IS NOT NULL))
@@ -81,11 +82,7 @@ CREATE TABLE IF NOT EXISTS DRIVER_ASSIGNMENT (
     ORDER_ID INTEGER NOT NULL REFERENCES ORDERS(ORDER_ID) ON DELETE CASCADE,
     DRIVER_ID INTEGER NOT NULL REFERENCES USERS(USER_ID) ON DELETE CASCADE,
     SUPPLIER_ID INTEGER NOT NULL REFERENCES SUPPLIERS(USER_ID) ON DELETE CASCADE,
-    IS_ACCEPTED BOOLEAN DEFAULT FALSE,
-    TIME_LIMIT_FOR_SUPPLIER TIMESTAMP,
-    TIME_LIMIT_FOR_DRIVER TIMESTAMP,
-    CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
+    TIME_LIMIT_FOR_DRIVER TIMESTAMP,    
     PRIMARY KEY (ORDER_ID, DRIVER_ID)
 );
 
@@ -123,8 +120,7 @@ CREATE TABLE IF NOT EXISTS ORDER_HISTORY (
     PRICE INTEGER NOT NULL CHECK (PRICE >= 0),
     QUANTITY INTEGER NOT NULL CHECK (QUANTITY > 0),
     STATUS VARCHAR(20) NOT NULL CHECK (STATUS IN ('completed', 'cancelled')),
-    ORDER_DATE TIMESTAMP NOT NULL,
-    CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ORDER_DATE TIMESTAMP NOT NULL
 );
 
 
@@ -466,4 +462,98 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-
+-- Purpose: Cancel/remove an order - can be called by any user
+-- Parameters:
+--   p_order_id: Order ID to cancel
+--   p_user_id: User ID who is cancelling (for authorization)
+-- Returns: JSON object with code field
+-- Code: 1=Success, 0=Failure
+-- If status='accepted', inserts into order_history before deletion
+CREATE OR REPLACE FUNCTION cancel_order(
+    p_order_id INTEGER,
+    p_user_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_record RECORD;
+    v_yard_location TEXT;
+BEGIN
+    -- Validate inputs
+    IF p_order_id IS NULL OR p_user_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID and User ID cannot be null'
+        );
+    END IF;
+    
+    -- Get order details
+    SELECT * INTO v_order_record
+    FROM orders
+    WHERE order_id = p_order_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found'
+        );
+    END IF;
+    
+    -- If status is 'accepted', insert into order_history
+    IF v_order_record.status = 'accepted' THEN
+        -- Get supplier yard location
+        SELECT yard_location INTO v_yard_location
+        FROM suppliers
+        WHERE user_id = v_order_record.supplier_id;
+        
+        -- Insert into order_history
+        INSERT INTO order_history (
+            customer_id,
+            order_id,
+            supplier_id,
+            yard_location,
+            price,
+            quantity,
+            status,
+            order_date,
+            created_at
+        ) VALUES (
+            v_order_record.customer_id,
+            v_order_record.order_id,
+            v_order_record.supplier_id,
+            COALESCE(v_yard_location, ''),
+            0,
+            v_order_record.requested_capacity,
+            'cancelled',
+            v_order_record.created_at,
+            CURRENT_TIMESTAMP
+        );
+    END IF;
+    
+    -- If driver was assigned, set them as available again
+    IF v_order_record.driver_id IS NOT NULL THEN
+        UPDATE supplier_drivers
+        SET available = TRUE
+        WHERE driver_user_id = v_order_record.driver_id;
+    END IF;
+    
+    -- Delete from driver_assignment if exists
+    DELETE FROM driver_assignment
+    WHERE order_id = p_order_id;
+    
+    -- Delete the order
+    DELETE FROM orders
+    WHERE order_id = p_order_id;
+    
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Order cancelled successfully'
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to cancel order: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;

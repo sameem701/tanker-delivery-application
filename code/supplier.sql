@@ -568,4 +568,154 @@ CREATE TRIGGER trigger_delete_bids_on_acceptance
     EXECUTE FUNCTION delete_bids_on_acceptance();
 
 
+-- ============================================================================
+-- FUNCTION: get_available_drivers_for_supplier
+-- ============================================================================
+-- Purpose: Get list of available drivers for a supplier
+--          Returns active drivers who are NOT currently on an accepted order
+-- Parameters:
+--   p_supplier_id: Supplier ID to get drivers for
+-- Returns: JSON array of available drivers with their details
+-- ============================================================================
+CREATE OR REPLACE FUNCTION get_available_drivers_for_supplier(
+    p_supplier_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_drivers JSON;
+BEGIN
+    -- Validate input
+    IF p_supplier_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier ID cannot be null'
+        );
+    END IF;
+    
+    -- Get available drivers
+    SELECT COALESCE(json_agg(json_build_object(
+        'driver_user_id', sd.driver_user_id,
+        'driver_name', u.name,
+        'driver_phone', u.phone
+    )), '[]'::json) INTO v_drivers
+    FROM supplier_drivers sd
+    JOIN users u ON sd.driver_user_id = u.user_id
+    WHERE sd.supplier_user_id = p_supplier_id
+      AND sd.driver_user_id IS NOT NULL
+      AND sd.available = TRUE;
+    
+    RETURN json_build_object(
+        'code', 1,
+        'drivers', v_drivers
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to get drivers: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
 
+
+-- ============================================================================
+-- FUNCTION: assign_driver_to_order
+-- ============================================================================
+-- Purpose: Supplier assigns a driver to an accepted order
+-- Parameters:
+--   p_order_id: Order ID to assign driver to
+--   p_supplier_id: Supplier ID (for authorization)
+--   p_driver_id: Driver user_id to assign
+-- Returns: JSON object with code field
+-- Code: 1=Success, 0=Failure
+-- ============================================================================
+CREATE OR REPLACE FUNCTION assign_driver_to_order(
+    p_order_id INTEGER,
+    p_supplier_id INTEGER,
+    p_driver_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_driver_belongs BOOLEAN;
+    v_order_valid BOOLEAN;
+    v_assignment_exists BOOLEAN;
+BEGIN
+    -- Validate inputs
+    IF p_order_id IS NULL OR p_supplier_id IS NULL OR p_driver_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID, Supplier ID, and Driver ID cannot be null'
+        );
+    END IF;
+    
+    -- Check if driver belongs to this supplier
+    SELECT EXISTS(
+        SELECT 1 FROM supplier_drivers
+        WHERE supplier_user_id = p_supplier_id 
+        AND driver_user_id = p_driver_id
+    ) INTO v_driver_belongs;
+    
+    IF NOT v_driver_belongs THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver does not belong to this supplier'
+        );
+    END IF;
+    
+    -- Check if order is valid for driver assignment
+    -- Must have: correct supplier_id, status='supplier_timer', and driver_id IS NULL
+    SELECT EXISTS(
+        SELECT 1 FROM orders
+        WHERE order_id = p_order_id
+        AND supplier_id = p_supplier_id
+        AND status = 'supplier_timer'
+        AND driver_id IS NULL
+    ) INTO v_order_valid;
+    
+    IF NOT v_order_valid THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not available for driver assignment'
+        );
+    END IF;
+    
+    -- Check if driver already assigned to this order
+    SELECT EXISTS(
+        SELECT 1 FROM driver_assignment
+        WHERE order_id = p_order_id
+    ) INTO v_assignment_exists;
+    
+    IF v_assignment_exists THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver already assigned to this order'
+        );
+    END IF;
+    
+    -- Insert into driver_assignment with 1 minute timer
+    INSERT INTO driver_assignment (
+        order_id,
+        driver_id,
+        supplier_id,
+        time_limit_for_driver
+    ) VALUES (
+        p_order_id,
+        p_driver_id,
+        p_supplier_id,
+        CURRENT_TIMESTAMP + INTERVAL '1 minute'
+    );
+    
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Driver assigned successfully'
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to assign driver: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;

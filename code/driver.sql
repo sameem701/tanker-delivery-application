@@ -136,3 +136,116 @@ CREATE TRIGGER trigger_relink_driver_on_session_insert
     FOR EACH ROW
     EXECUTE FUNCTION on_session_insert_relink_driver();
 
+
+-- ============================================================================
+-- FUNCTION: confirm_order_driver
+-- ============================================================================
+-- Purpose: Driver confirms acceptance of an assigned order
+--          Uses race-safe UPDATE to prevent multiple drivers accepting same order
+--          First driver to confirm wins, others get rejected
+-- Parameters:
+--   p_driver_id: Driver user_id confirming the order
+--   p_order_id: Order ID to confirm
+-- Returns: JSON object with code field
+-- Code: 1=Success, 0=Failure
+-- ============================================================================
+CREATE OR REPLACE FUNCTION confirm_order_driver(
+    p_driver_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_assignment_exists BOOLEAN;
+    v_time_limit TIMESTAMP;
+    v_supplier_time_limit TIMESTAMP;
+    v_rows_updated INTEGER;
+BEGIN
+    -- Validate inputs
+    IF p_driver_id IS NULL OR p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver ID and Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Check if driver was assigned to this order and get time limit
+    SELECT time_limit_for_driver INTO v_time_limit
+    FROM driver_assignment
+    WHERE order_id = p_order_id
+      AND driver_id = p_driver_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'You were not assigned to this order'
+        );
+    END IF;
+    
+    -- Check if driver timer expired
+    IF CURRENT_TIMESTAMP > v_time_limit THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Time limit expired for this order'
+        );
+    END IF;
+    
+    -- Check supplier time limit
+    SELECT time_limit_for_supplier INTO v_supplier_time_limit
+    FROM orders
+    WHERE order_id = p_order_id;
+    
+    IF CURRENT_TIMESTAMP > v_supplier_time_limit THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier time limit expired for this order'
+        );
+    END IF;
+    
+    -- RACE-SAFE UPDATE: Try to claim the order
+    -- This will only succeed if driver_id IS NULL (no one else claimed it yet)
+    UPDATE orders
+    SET driver_id = p_driver_id
+    WHERE order_id = p_order_id
+      AND driver_id IS NULL;
+    
+    -- Check how many rows were updated
+    GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
+    
+    IF v_rows_updated = 0 THEN
+        -- Someone else already accepted this order
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order already accepted by another driver'
+        );
+    END IF;
+    
+    -- This driver won! Complete the acceptance
+    
+    -- Mark driver as unavailable
+    UPDATE supplier_drivers
+    SET available = FALSE
+    WHERE driver_user_id = p_driver_id;
+    
+    -- Update order status to 'accepted' and set confirmation timestamp
+    UPDATE orders
+    SET status = 'accepted',
+        order_confirmed_at = CURRENT_TIMESTAMP
+    WHERE order_id = p_order_id;
+    
+    -- Delete all other pending driver assignments for this order
+    DELETE FROM driver_assignment
+    WHERE order_id = p_order_id;
+    
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Order confirmed successfully'
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to confirm order: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;

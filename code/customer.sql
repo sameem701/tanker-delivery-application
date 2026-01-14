@@ -279,7 +279,7 @@ BEGIN
     UPDATE orders
     SET supplier_id = v_bid_record.supplier_id,
         accepted_price = v_bid_record.bid_price,
-        order_accepted_by_supplier_at = CURRENT_TIMESTAMP,
+        time_limit_for_supplier = CURRENT_TIMESTAMP + INTERVAL '5 minutes',
         status = 'supplier_timer'
     WHERE order_id = v_bid_record.order_id;
     
