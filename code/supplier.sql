@@ -856,3 +856,66 @@ EXCEPTION
         );
 END;
 $$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Get active orders for supplier
+-- ============================================================================
+-- Purpose: Returns list of all active orders for a supplier
+--          Active means status is supplier_timer, accepted, or ride_started
+-- Parameters:
+--   p_supplier_id: Supplier user_id
+-- Returns: JSON array with active orders
+-- ============================================================================
+CREATE OR REPLACE FUNCTION get_active_orders_supplier(
+    p_supplier_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_orders JSON;
+BEGIN
+    -- Validate supplier_id
+    IF p_supplier_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier ID cannot be null'
+        );
+    END IF;
+    
+    -- Get all active orders for this supplier
+    SELECT COALESCE(json_agg(
+        json_build_object(
+            'order_id', o.order_id,
+            'delivery_location', o.delivery_location,
+            'quantity', o.requested_capacity,
+            'accepted_price', o.accepted_price,
+            'status', o.status,
+            'created_at', o.created_at,
+            'order_confirmed_at', o.order_confirmed_at,
+            'time_limit_for_supplier', o.time_limit_for_supplier,
+            'customer_name', cu.name,
+            'customer_phone', cu.phone,
+            'driver_name', du.name,
+            'driver_phone', du.phone
+        )
+    ), '[]'::json) INTO v_orders
+    FROM orders o
+    LEFT JOIN users cu ON o.customer_id = cu.user_id
+    LEFT JOIN users du ON o.driver_id = du.user_id
+    WHERE o.supplier_id = p_supplier_id
+      AND o.status IN ('supplier_timer', 'accepted', 'ride_started')
+    ORDER BY o.created_at DESC;
+    
+    RETURN json_build_object(
+        'code', 1,
+        'orders', v_orders
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to get active orders: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
