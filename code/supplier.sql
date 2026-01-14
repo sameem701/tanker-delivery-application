@@ -569,16 +569,45 @@ CREATE TRIGGER trigger_delete_bids_on_acceptance
 
 
 -- ============================================================================
+-- TRIGGER: Notify when driver_assignment table changes
+-- ============================================================================
+-- Purpose: Sends PostgreSQL NOTIFY signal for real-time driver assignment updates
+--          Backend listens and broadcasts to supplier's screen via WebSocket
+-- ============================================================================
+CREATE OR REPLACE FUNCTION notify_driver_assignment_updated()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Send notification on driver_assignment_channel with order_id
+    IF TG_OP = 'DELETE' THEN
+        PERFORM pg_notify('driver_assignment_channel', OLD.order_id::text);
+        RETURN OLD;
+    ELSE
+        PERFORM pg_notify('driver_assignment_channel', NEW.order_id::text);
+        RETURN NEW;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_notify_driver_assignment_updated ON driver_assignment;
+CREATE TRIGGER trigger_notify_driver_assignment_updated
+    AFTER INSERT OR UPDATE OR DELETE ON driver_assignment
+    FOR EACH ROW
+    EXECUTE FUNCTION notify_driver_assignment_updated();
+
+
+-- ============================================================================
 -- FUNCTION: get_available_drivers_for_supplier
 -- ============================================================================
--- Purpose: Get list of available drivers for a supplier
---          Returns active drivers who are NOT currently on an accepted order
+-- Purpose: Get list of drivers with their assignment status for a specific order
+--          Shows: available, pending (assigned but not accepted), rejected
 -- Parameters:
 --   p_supplier_id: Supplier ID to get drivers for
--- Returns: JSON array of available drivers with their details
+--   p_order_id: Order ID to check assignment status
+-- Returns: JSON array with driver details and assignment status
 -- ============================================================================
 CREATE OR REPLACE FUNCTION get_available_drivers_for_supplier(
-    p_supplier_id INTEGER
+    p_supplier_id INTEGER,
+    p_order_id INTEGER
 )
 RETURNS JSON AS $$
 DECLARE
@@ -592,14 +621,28 @@ BEGIN
         );
     END IF;
     
-    -- Get available drivers
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Get drivers with their assignment status for this order
     SELECT COALESCE(json_agg(json_build_object(
         'driver_user_id', sd.driver_user_id,
         'driver_name', u.name,
-        'driver_phone', u.phone
+        'driver_phone', u.phone,
+        'status', CASE
+            WHEN da.order_rejected = TRUE THEN 'rejected'
+            WHEN da.driver_id IS NOT NULL AND CURRENT_TIMESTAMP <= da.time_limit_for_driver THEN 'pending'
+            ELSE 'available'
+        END,
+        'time_limit', da.time_limit_for_driver
     )), '[]'::json) INTO v_drivers
     FROM supplier_drivers sd
     JOIN users u ON sd.driver_user_id = u.user_id
+    LEFT JOIN driver_assignment da ON da.driver_id = sd.driver_user_id AND da.order_id = p_order_id
     WHERE sd.supplier_user_id = p_supplier_id
       AND sd.driver_user_id IS NOT NULL
       AND sd.available = TRUE;
@@ -663,6 +706,21 @@ BEGIN
         );
     END IF;
     
+    -- Check if driver rejected this order
+    SELECT EXISTS(
+        SELECT 1 FROM driver_assignment
+        WHERE order_id = p_order_id
+        AND driver_id = p_driver_id
+        AND order_rejected = TRUE
+    ) INTO v_assignment_exists;
+    
+    IF v_assignment_exists THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver has rejected this order'
+        );
+    END IF;
+    
     -- Check if order is valid for driver assignment
     -- Must have: correct supplier_id, status='supplier_timer', and driver_id IS NULL
     SELECT EXISTS(
@@ -680,20 +738,13 @@ BEGIN
         );
     END IF;
     
-    -- Check if driver already assigned to this order
-    SELECT EXISTS(
-        SELECT 1 FROM driver_assignment
-        WHERE order_id = p_order_id
-    ) INTO v_assignment_exists;
+    -- Delete old expired assignment (timer ran out, not rejected)
+    DELETE FROM driver_assignment
+    WHERE order_id = p_order_id
+      AND driver_id = p_driver_id
+      AND order_rejected = FALSE;
     
-    IF v_assignment_exists THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Driver already assigned to this order'
-        );
-    END IF;
-    
-    -- Insert into driver_assignment with 1 minute timer
+    -- Insert new driver_assignment with fresh 1 minute timer
     INSERT INTO driver_assignment (
         order_id,
         driver_id,
@@ -716,6 +767,92 @@ EXCEPTION
         RETURN json_build_object(
             'code', 0,
             'message', 'Failed to assign driver: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Get order details for supplier
+-- ============================================================================
+-- Purpose: Returns order details including customer delivery location and driver info
+--          Supplier can track order status and have contact details
+-- Parameters:
+--   p_supplier_id: Supplier user_id (for authorization)
+--   p_order_id: Order ID to get details for
+-- Returns: JSON object with order details
+-- Code: 1=Success with data, 0=Failure/Not authorized
+-- ============================================================================
+CREATE OR REPLACE FUNCTION get_order_details_supplier(
+    p_supplier_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_record RECORD;
+BEGIN
+    -- Validate inputs
+    IF p_supplier_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier ID cannot be null'
+        );
+    END IF;
+    
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Get order details with customer and driver info
+    SELECT 
+        o.order_id,
+        o.delivery_location,
+        o.requested_capacity,
+        o.accepted_price,
+        o.status,
+        o.order_confirmed_at,
+        cu.name AS customer_name,
+        cu.phone AS customer_phone,
+        du.name AS driver_name,
+        du.phone AS driver_phone
+    INTO v_order_record
+    FROM orders o
+    LEFT JOIN users cu ON o.customer_id = cu.user_id
+    LEFT JOIN users du ON o.driver_id = du.user_id
+    WHERE o.order_id = p_order_id
+      AND o.supplier_id = p_supplier_id;
+    
+    -- Check if order exists and belongs to supplier
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found or does not belong to you'
+        );
+    END IF;
+    
+    -- Return order details
+    RETURN json_build_object(
+        'code', 1,
+        'order_id', v_order_record.order_id,
+        'delivery_location', v_order_record.delivery_location,
+        'quantity', v_order_record.requested_capacity,
+        'accepted_price', v_order_record.accepted_price,
+        'status', v_order_record.status,
+        'order_confirmed_at', v_order_record.order_confirmed_at,
+        'customer_name', v_order_record.customer_name,
+        'customer_phone', v_order_record.customer_phone,
+        'driver_name', v_order_record.driver_name,
+        'driver_phone', v_order_record.driver_phone
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to get order details: ' || SQLERRM
         );
 END;
 $$ LANGUAGE plpgsql;

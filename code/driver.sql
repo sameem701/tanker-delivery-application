@@ -249,3 +249,151 @@ EXCEPTION
         );
 END;
 $$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- FUNCTION: reject_order_driver
+-- ============================================================================
+-- Purpose: Driver rejects an assigned order
+--          Sets order_rejected = TRUE in driver_assignment
+--          Driver will appear greyed out in supplier's driver list for this order
+-- Parameters:
+--   p_driver_id: Driver user_id rejecting the order
+--   p_order_id: Order ID to reject
+-- Returns: JSON object with code field
+-- Code: 1=Success, 0=Failure
+-- ============================================================================
+CREATE OR REPLACE FUNCTION reject_order_driver(
+    p_driver_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_time_limit TIMESTAMP;
+BEGIN
+    -- Validate inputs
+    IF p_driver_id IS NULL OR p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver ID and Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Check if driver was assigned to this order and get time limit
+    SELECT time_limit_for_driver INTO v_time_limit
+    FROM driver_assignment
+    WHERE order_id = p_order_id
+      AND driver_id = p_driver_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'You were not assigned to this order'
+        );
+    END IF;
+    
+    -- Check if timer expired (can't reject expired assignments)
+    IF CURRENT_TIMESTAMP > v_time_limit THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Time limit expired, assignment already expired'
+        );
+    END IF;
+    
+    -- Mark as rejected
+    UPDATE driver_assignment
+    SET order_rejected = TRUE
+    WHERE order_id = p_order_id
+      AND driver_id = p_driver_id;
+    
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Order rejected successfully'
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to reject order: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Get order details for driver
+-- ============================================================================
+-- Purpose: Returns order details with customer information for delivery
+--          Driver gets customer contact and delivery location
+-- Parameters:
+--   p_driver_id: Driver user_id (for authorization)
+--   p_order_id: Order ID to get details for
+-- Returns: JSON object with order details
+-- Code: 1=Success with data, 0=Failure/Not authorized
+-- ============================================================================
+CREATE OR REPLACE FUNCTION get_order_details_driver(
+    p_driver_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_record RECORD;
+BEGIN
+    -- Validate inputs
+    IF p_driver_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver ID cannot be null'
+        );
+    END IF;
+    
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Get order details with customer info
+    SELECT 
+        o.order_id,
+        o.delivery_location,
+        o.requested_capacity,
+        o.accepted_price,
+        o.status,
+        cu.name AS customer_name,
+        cu.phone AS customer_phone
+    INTO v_order_record
+    FROM orders o
+    LEFT JOIN users cu ON o.customer_id = cu.user_id
+    WHERE o.order_id = p_order_id
+      AND o.driver_id = p_driver_id;
+    
+    -- Check if order exists and belongs to driver
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found or not assigned to you'
+        );
+    END IF;
+    
+    -- Return order details
+    RETURN json_build_object(
+        'code', 1,
+        'order_id', v_order_record.order_id,
+        'delivery_location', v_order_record.delivery_location,
+        'quantity', v_order_record.requested_capacity,
+        'price', v_order_record.accepted_price,
+        'status', v_order_record.status,
+        'customer_name', v_order_record.customer_name,
+        'customer_phone', v_order_record.customer_phone
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to get order details: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;

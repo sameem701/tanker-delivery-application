@@ -298,4 +298,90 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-
+-- ============================================================================
+-- FUNCTION: Get order details for customer
+-- ============================================================================
+-- Purpose: Returns complete order details including supplier and driver info
+--          Customer can track their order status and contact details
+-- Parameters:
+--   p_customer_id: Customer user_id (for authorization)
+--   p_order_id: Order ID to get details for
+-- Returns: JSON object with order details
+-- Code: 1=Success with data, 0=Failure/Not authorized
+-- ============================================================================
+CREATE OR REPLACE FUNCTION get_order_details_customer(
+    p_customer_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_record RECORD;
+BEGIN
+    -- Validate inputs
+    IF p_customer_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Customer ID cannot be null'
+        );
+    END IF;
+    
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Get order details with supplier and driver info
+    SELECT 
+        o.order_id,
+        o.customer_id,
+        o.delivery_location,
+        o.requested_capacity,
+        o.accepted_price,
+        o.status,
+        o.created_at,
+        s.yard_location AS supplier_yard_location,
+        s.business_contact AS supplier_business_contact,
+        su.name AS supplier_name,
+        du.name AS driver_name,
+        du.phone AS driver_phone
+    INTO v_order_record
+    FROM orders o
+    LEFT JOIN suppliers s ON o.supplier_id = s.user_id
+    LEFT JOIN users su ON s.user_id = su.user_id
+    LEFT JOIN users du ON o.driver_id = du.user_id
+    WHERE o.order_id = p_order_id
+      AND o.customer_id = p_customer_id;
+    
+    -- Check if order exists and belongs to customer
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found or does not belong to you'
+        );
+    END IF;
+    
+    -- Return order details
+    RETURN json_build_object(
+        'code', 1,
+        'order_id', v_order_record.order_id,
+        'delivery_location', v_order_record.delivery_location,
+        'quantity', v_order_record.requested_capacity,
+        'accepted_price', v_order_record.accepted_price,
+        'status', v_order_record.status,
+        'supplier_name', v_order_record.supplier_name,
+        'supplier_business_contact', v_order_record.supplier_business_contact,
+        'supplier_yard_location', v_order_record.supplier_yard_location,
+        'driver_name', v_order_record.driver_name,
+        'driver_phone', v_order_record.driver_phone
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to get order details: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
