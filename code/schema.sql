@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS ORDERS (
     TIME_LIMIT_FOR_SUPPLIER TIMESTAMP,
     ACCEPTED_PRICE NUMERIC(10,0),
     ORDER_CONFIRMED_AT TIMESTAMP,
-    STATUS VARCHAR(20) DEFAULT 'open' NOT NULL CHECK (STATUS IN ('open', 'supplier_timer','accepted','ride_started','finished')),
+    STATUS VARCHAR(20) DEFAULT 'open' NOT NULL CHECK (STATUS IN ('open', 'supplier_timer','accepted','ride_started','reached','finished')),
     CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UPDATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT DRIVER_REQUIRES_SUPPLIER CHECK ((DRIVER_ID IS NULL) OR (SUPPLIER_ID IS NOT NULL))
@@ -101,26 +101,19 @@ CREATE TABLE IF NOT EXISTS BIDS (
 
 
 
-CREATE TABLE IF NOT EXISTS RATINGS (
-    RATING_ID SERIAL PRIMARY KEY,
-    ORDER_ID INTEGER NOT NULL UNIQUE REFERENCES ORDERS(ORDER_ID) ON DELETE CASCADE,
-    SUPPLIER_ID INTEGER REFERENCES SUPPLIERS(USER_ID) ON DELETE SET NULL,
-    RATING INTEGER CHECK (SUPPLIER_RATING BETWEEN 1 AND 5),
-    REASON TEXT
-    );
-
-
-
 CREATE TABLE IF NOT EXISTS ORDER_HISTORY (
     HISTORY_ID SERIAL PRIMARY KEY,
     ORDER_ID INTEGER NOT NULL REFERENCES ORDERS(ORDER_ID) ON DELETE CASCADE,
     CUSTOMER_ID INTEGER NOT NULL REFERENCES USERS(USER_ID) ON DELETE SET NULL,
     SUPPLIER_ID INTEGER REFERENCES SUPPLIERS(USER_ID) ON DELETE SET NULL,
+    DRIVER_ID INTEGER REFERENCES USERS(USER_ID) ON DELETE SET NULL,
+    CUSTOMER_LOCATION TEXT NOT NULL,
     YARD_LOCATION TEXT NOT NULL,
     PRICE INTEGER NOT NULL CHECK (PRICE >= 0),
     QUANTITY INTEGER NOT NULL CHECK (QUANTITY > 0),
     STATUS VARCHAR(20) NOT NULL CHECK (STATUS IN ('completed', 'cancelled')),
-    ORDER_DATE TIMESTAMP NOT NULL
+    ORDER_DATE TIMESTAMP NOT NULL,
+    REASON TEXT
 );
 
 
@@ -469,9 +462,8 @@ $$ LANGUAGE plpgsql;
 --   p_reason: Reason for cancellation (optional)
 -- Returns: JSON object with code field
 -- Code: 1=Success, 0=Failure
--- If status is NOT 'open' or 'supplier_timer', inserts into order_history
--- If status is 'accepted' or 'ride_started', also inserts into ratings with reason
--- If supplier/driver cancels 'accepted'/'ride_started', supplier rating -0.2
+-- If status is NOT IN ('open', 'supplier_timer'), inserts into order_history with reason
+-- If supplier/driver cancels 'accepted'/'ride_started'/'reached', supplier rating -0.2
 CREATE OR REPLACE FUNCTION cancel_order(
     p_order_id INTEGER,
     p_user_id INTEGER,
@@ -522,39 +514,32 @@ BEGIN
             customer_id,
             order_id,
             supplier_id,
+            driver_id,
+            customer_location,
             yard_location,
             price,
             quantity,
             status,
             order_date,
+            reason,
             created_at
         ) VALUES (
             v_order_record.customer_id,
             v_order_record.order_id,
             v_order_record.supplier_id,
+            v_order_record.driver_id,
+            v_order_record.delivery_location,
             COALESCE(v_yard_location, ''),
             0,
             v_order_record.requested_capacity,
             'cancelled',
             v_order_record.created_at,
+            p_reason,
             CURRENT_TIMESTAMP
         );
         
-        -- If status is 'accepted' or 'ride_started', also insert into ratings with reason
-        IF v_order_record.status IN ('accepted', 'ride_started') THEN
-            -- Insert into ratings table with reason (rating stays NULL)
-            INSERT INTO ratings (
-                order_id,
-                supplier_id,
-                reason,
-                created_at
-            ) VALUES (
-                v_order_record.order_id,
-                v_order_record.supplier_id,
-                p_reason,
-                CURRENT_TIMESTAMP
-            );
-            
+        -- If status is 'accepted' or 'ride_started' or 'reached', penalize supplier if not customer
+        IF v_order_record.status IN ('accepted', 'ride_started', 'reached') THEN
             -- If canceller is NOT the customer, penalize supplier (rating -0.2)
             IF p_user_id != v_order_record.customer_id THEN
                 UPDATE suppliers
@@ -589,6 +574,106 @@ EXCEPTION
         RETURN json_build_object(
             'code', 0,
             'message', 'Failed to cancel order: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: View past orders
+-- ============================================================================
+-- Purpose: Retrieve past orders from order_history for a user based on their role
+--          Returns orders where user was customer, supplier, or driver
+-- Parameters:
+--   p_user_id: User ID to get past orders for
+-- Returns: JSON array of past orders with order_id, price, quantity, status, order_date
+-- ============================================================================
+CREATE OR REPLACE FUNCTION view_past_orders(
+    p_user_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_user_role VARCHAR(20);
+    v_orders JSON;
+BEGIN
+    -- Validate input
+    IF p_user_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'User ID cannot be null'
+        );
+    END IF;
+    
+    -- Get user role from users table
+    SELECT role INTO v_user_role
+    FROM users
+    WHERE user_id = p_user_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'User not found'
+        );
+    END IF;
+    
+    -- Query order_history based on user role
+    IF v_user_role = 'customer' THEN
+        SELECT json_agg(
+            json_build_object(
+                'order_id', order_id,
+                'price', price,
+                'quantity', quantity,
+                'status', status,
+                'order_date', order_date
+            ) ORDER BY order_date DESC
+        ) INTO v_orders
+        FROM order_history
+        WHERE customer_id = p_user_id;
+        
+    ELSIF v_user_role = 'supplier' THEN
+        SELECT json_agg(
+            json_build_object(
+                'order_id', order_id,
+                'price', price,
+                'quantity', quantity,
+                'status', status,
+                'order_date', order_date
+            ) ORDER BY order_date DESC
+        ) INTO v_orders
+        FROM order_history
+        WHERE supplier_id = p_user_id;
+        
+    ELSIF v_user_role = 'driver' THEN
+        SELECT json_agg(
+            json_build_object(
+                'order_id', order_id,
+                'price', price,
+                'quantity', quantity,
+                'status', status,
+                'order_date', order_date
+            ) ORDER BY order_date DESC
+        ) INTO v_orders
+        FROM order_history
+        WHERE driver_id = p_user_id;
+        
+    ELSE
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Invalid user role'
+        );
+    END IF;
+    
+    -- Return orders (will be null if no orders found)
+    RETURN json_build_object(
+        'code', 1,
+        'orders', COALESCE(v_orders, '[]'::json)
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to retrieve past orders: ' || SQLERRM
         );
 END;
 $$ LANGUAGE plpgsql;

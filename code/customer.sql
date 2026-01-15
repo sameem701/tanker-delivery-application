@@ -391,8 +391,8 @@ $$ LANGUAGE plpgsql;
 -- FUNCTION: Submit rating for completed order
 -- ============================================================================
 -- Purpose: Customer rates supplier after order completion
---          Updates rating in ratings table, recalculates supplier average rating,
---          and increments supplier's total_orders count
+--          Calculates weighted average rating and updates supplier's rating,
+--          increments supplier's total_orders count
 -- Parameters:
 --   p_customer_id: Customer user_id (for authorization)
 --   p_order_id: Order ID to rate
@@ -410,8 +410,10 @@ DECLARE
     v_order_customer_id INTEGER;
     v_supplier_id INTEGER;
     v_order_status VARCHAR(20);
-    v_rating_exists BOOLEAN;
-    v_avg_rating DECIMAL(3,2);
+    v_current_rating DECIMAL(3,2);
+    v_total_orders INTEGER;
+    v_new_rating DECIMAL(3,2);
+    v_already_rated BOOLEAN;
 BEGIN
     -- Validate inputs
     IF p_customer_id IS NULL THEN
@@ -464,44 +466,44 @@ BEGIN
         );
     END IF;
     
-    -- Check if rating already exists
+    -- Check if order already rated (exists in order_history with status='completed')
     SELECT EXISTS(
-        SELECT 1 FROM ratings 
-        WHERE order_id = p_order_id AND rating IS NOT NULL
-    ) INTO v_rating_exists;
+        SELECT 1 FROM order_history 
+        WHERE order_id = p_order_id AND status = 'completed'
+    ) INTO v_already_rated;
     
-    IF v_rating_exists THEN
+    IF v_already_rated THEN
         RETURN json_build_object(
             'code', 0,
             'message', 'You have already rated this order'
         );
     END IF;
     
-    -- Update rating in ratings table (reason remains NULL)
-    UPDATE ratings
-    SET rating = p_rating
-    WHERE order_id = p_order_id;
-    
-    -- Increment supplier's total_orders
-    UPDATE suppliers
-    SET total_orders = total_orders + 1
+    -- Get supplier's current rating and total_orders
+    SELECT rating, total_orders INTO v_current_rating, v_total_orders
+    FROM suppliers
     WHERE user_id = v_supplier_id;
     
-    -- Calculate new average rating for supplier
-    SELECT AVG(rating)::DECIMAL(3,2) INTO v_avg_rating
-    FROM ratings
-    WHERE supplier_id = v_supplier_id
-      AND rating IS NOT NULL;
+    -- Calculate new weighted average rating
+    -- Formula: new_rating = ((current_rating * total_orders) + new_rating) / (total_orders + 1)
+    v_new_rating := ((v_current_rating * v_total_orders) + p_rating) / (v_total_orders + 1);
     
-    -- Update supplier's rating
+    -- Update supplier's rating and increment total_orders
     UPDATE suppliers
-    SET rating = COALESCE(v_avg_rating, 5.00)
+    SET rating = v_new_rating,
+        total_orders = total_orders + 1
     WHERE user_id = v_supplier_id;
     
-    -- Check if order exists in order_history, if yes delete from orders table
-    IF EXISTS(SELECT 1 FROM order_history WHERE order_id = p_order_id) THEN
-        DELETE FROM orders WHERE order_id = p_order_id;
+    -- Verify order exists in order_history (should have been inserted by finish_order)
+    IF NOT EXISTS(SELECT 1 FROM order_history WHERE order_id = p_order_id) THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found in history. Order must be completed first.'
+        );
     END IF;
+    
+    -- Delete from orders table
+    DELETE FROM orders WHERE order_id = p_order_id;
     
     RETURN json_build_object(
         'code', 1,
@@ -513,6 +515,89 @@ EXCEPTION
         RETURN json_build_object(
             'code', 0,
             'message', 'Failed to submit rating: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: View past order details for customer
+-- ============================================================================
+-- Purpose: Get detailed information for a single past order from order_history
+-- Parameters:
+--   p_customer_id: Customer user_id (for authorization)
+--   p_order_id: Order ID to view details for
+-- Returns: JSON object with order details
+-- ============================================================================
+CREATE OR REPLACE FUNCTION view_past_order_details_customer(
+    p_customer_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_record RECORD;
+    v_supplier_name TEXT;
+    v_driver_name TEXT;
+BEGIN
+    -- Validate inputs
+    IF p_customer_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Customer ID cannot be null'
+        );
+    END IF;
+    
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Get order from order_history
+    SELECT * INTO v_order_record
+    FROM order_history
+    WHERE order_id = p_order_id AND customer_id = p_customer_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found in your history'
+        );
+    END IF;
+    
+    -- Get supplier name
+    SELECT name INTO v_supplier_name
+    FROM users
+    WHERE user_id = v_order_record.supplier_id;
+    
+    -- Get driver name (may be NULL if no driver was assigned)
+    IF v_order_record.driver_id IS NOT NULL THEN
+        SELECT name INTO v_driver_name
+        FROM users
+        WHERE user_id = v_order_record.driver_id;
+    END IF;
+    
+    -- Return order details
+    RETURN json_build_object(
+        'code', 1,
+        'order', json_build_object(
+            'order_date', v_order_record.order_date,
+            'quantity', v_order_record.quantity,
+            'price', v_order_record.price,
+            'status', v_order_record.status,
+            'driver_name', v_driver_name,
+            'supplier_name', v_supplier_name,
+            'customer_location', v_order_record.customer_location,
+            'yard_location', v_order_record.yard_location
+        )
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to retrieve order details: ' || SQLERRM
         );
 END;
 $$ LANGUAGE plpgsql;

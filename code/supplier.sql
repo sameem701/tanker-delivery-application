@@ -903,7 +903,7 @@ BEGIN
     LEFT JOIN users cu ON o.customer_id = cu.user_id
     LEFT JOIN users du ON o.driver_id = du.user_id
     WHERE o.supplier_id = p_supplier_id
-      AND o.status IN ('supplier_timer', 'accepted', 'ride_started')
+      AND o.status IN ('supplier_timer', 'accepted', 'ride_started', 'reached')
     ORDER BY o.created_at DESC;
     
     RETURN json_build_object(
@@ -916,6 +916,81 @@ EXCEPTION
         RETURN json_build_object(
             'code', 0,
             'message', 'Failed to get active orders: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: View past order details for supplier
+-- ============================================================================
+-- Purpose: Get detailed information for a single past order from order_history
+-- Parameters:
+--   p_supplier_id: Supplier user_id (for authorization)
+--   p_order_id: Order ID to view details for
+-- Returns: JSON object with order details
+-- ============================================================================
+CREATE OR REPLACE FUNCTION view_past_order_details_supplier(
+    p_supplier_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_record RECORD;
+    v_driver_name TEXT;
+BEGIN
+    -- Validate inputs
+    IF p_supplier_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier ID cannot be null'
+        );
+    END IF;
+    
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Get order from order_history
+    SELECT * INTO v_order_record
+    FROM order_history
+    WHERE order_id = p_order_id AND supplier_id = p_supplier_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found in your history'
+        );
+    END IF;
+    
+    -- Get driver name (may be NULL if no driver was assigned)
+    IF v_order_record.driver_id IS NOT NULL THEN
+        SELECT name INTO v_driver_name
+        FROM users
+        WHERE user_id = v_order_record.driver_id;
+    END IF;
+    
+    -- Return order details
+    RETURN json_build_object(
+        'code', 1,
+        'order', json_build_object(
+            'order_date', v_order_record.order_date,
+            'price', v_order_record.price,
+            'quantity', v_order_record.quantity,
+            'customer_location', v_order_record.customer_location,
+            'driver_name', v_driver_name,
+            'status', v_order_record.status
+        )
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to retrieve order details: ' || SQLERRM
         );
 END;
 $$ LANGUAGE plpgsql;

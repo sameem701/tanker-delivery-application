@@ -483,6 +483,89 @@ $$ LANGUAGE plpgsql;
 
 
 -- ============================================================================
+-- FUNCTION: Mark order as reached
+-- ============================================================================
+-- Purpose: Driver marks that they have arrived at delivery location
+--          Changes status from 'ride_started' to 'reached'
+-- Parameters:
+--   p_driver_id: Driver user_id marking arrival
+--   p_order_id: Order ID to mark as reached
+-- Returns: JSON object with code field
+-- Code: 1=Success, 0=Failure
+-- ============================================================================
+CREATE OR REPLACE FUNCTION mark_order_reached(
+    p_driver_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_status VARCHAR(20);
+    v_order_driver_id INTEGER;
+BEGIN
+    -- Validate inputs
+    IF p_driver_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver ID cannot be null'
+        );
+    END IF;
+    
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Get order status and driver_id
+    SELECT status, driver_id INTO v_order_status, v_order_driver_id
+    FROM orders
+    WHERE order_id = p_order_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found'
+        );
+    END IF;
+    
+    -- Check if this driver owns the order
+    IF v_order_driver_id != p_driver_id THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'This order is not assigned to you'
+        );
+    END IF;
+    
+    -- Check if order status is 'ride_started'
+    IF v_order_status != 'ride_started' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order status must be ride_started to mark as reached. Current status: ' || v_order_status
+        );
+    END IF;
+    
+    -- Update order status to 'reached'
+    UPDATE orders
+    SET status = 'reached'
+    WHERE order_id = p_order_id;
+    
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Marked as reached successfully'
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to mark as reached: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
 -- FUNCTION: Finish order/delivery
 -- ============================================================================
 -- Purpose: Driver completes the delivery
@@ -538,10 +621,10 @@ BEGIN
     END IF;
     
     -- Check if order status is 'ride_started'
-    IF v_order_record.status != 'ride_started' THEN
+    IF v_order_record.status != 'reached' THEN
         RETURN json_build_object(
             'code', 0,
-            'message', 'Order must be in ride_started status to finish. Current status: ' || v_order_record.status
+            'message', 'Order must be in reached status to finish. Current status: ' || v_order_record.status
         );
     END IF;
     
@@ -555,29 +638,26 @@ BEGIN
         customer_id,
         order_id,
         supplier_id,
+        driver_id,
+        customer_location,
         yard_location,
         price,
         quantity,
         status,
-        order_date
+        order_date,
+        reason
     ) VALUES (
         v_order_record.customer_id,
         v_order_record.order_id,
         v_order_record.supplier_id,
+        v_order_record.driver_id,
+        v_order_record.delivery_location,
         COALESCE(v_yard_location, ''),
         v_order_record.accepted_price,
         v_order_record.requested_capacity,
         'completed',
-        v_order_record.order_confirmed_at
-    );
-    
-    -- Insert into ratings table (without rating and reason - customer fills later)
-    INSERT INTO ratings (
-        order_id,
-        supplier_id
-    ) VALUES (
-        v_order_record.order_id,
-        v_order_record.supplier_id
+        v_order_record.order_confirmed_at,
+        NULL
     );
     
     -- Update order status to 'finished'
@@ -600,6 +680,72 @@ EXCEPTION
         RETURN json_build_object(
             'code', 0,
             'message', 'Failed to finish order: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: View past order details for driver
+-- ============================================================================
+-- Purpose: Get detailed information for a single past order from order_history
+-- Parameters:
+--   p_driver_id: Driver user_id (for authorization)
+--   p_order_id: Order ID to view details for
+-- Returns: JSON object with order details
+-- ============================================================================
+CREATE OR REPLACE FUNCTION view_past_order_details_driver(
+    p_driver_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_record RECORD;
+BEGIN
+    -- Validate inputs
+    IF p_driver_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver ID cannot be null'
+        );
+    END IF;
+    
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Get order from order_history
+    SELECT * INTO v_order_record
+    FROM order_history
+    WHERE order_id = p_order_id AND driver_id = p_driver_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found in your history'
+        );
+    END IF;
+    
+    -- Return order details
+    RETURN json_build_object(
+        'code', 1,
+        'order', json_build_object(
+            'order_date', v_order_record.order_date,
+            'price', v_order_record.price,
+            'quantity', v_order_record.quantity,
+            'customer_location', v_order_record.customer_location,
+            'status', v_order_record.status
+        )
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to retrieve order details: ' || SQLERRM
         );
 END;
 $$ LANGUAGE plpgsql;
