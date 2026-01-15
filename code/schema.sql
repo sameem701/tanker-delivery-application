@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS SUPPLIERS (
     BUSINESS_CONTACT VARCHAR(20) NOT NULL,
     CNIC_FRONT_PATH TEXT NOT NULL,
     CNIC_BACK_PATH  TEXT NOT NULL,
+    RATING DECIMAL(3,2) DEFAULT 0.00,
+    TOTAL_ORDERS INTEGER DEFAULT 0,
     CREATED_AT TIMESTAMP NOT NULL
 );
 
@@ -103,19 +105,16 @@ CREATE TABLE IF NOT EXISTS RATINGS (
     RATING_ID SERIAL PRIMARY KEY,
     ORDER_ID INTEGER NOT NULL UNIQUE REFERENCES ORDERS(ORDER_ID) ON DELETE CASCADE,
     SUPPLIER_ID INTEGER REFERENCES SUPPLIERS(USER_ID) ON DELETE SET NULL,
-    DRIVER_ID INTEGER REFERENCES USERS(USER_ID) ON DELETE SET NULL,
-    SUPPLIER_RATING INTEGER CHECK (SUPPLIER_RATING BETWEEN 1 AND 5),
-    DRIVER_RATING INTEGER CHECK (DRIVER_RATING BETWEEN 1 AND 5),
-    REASON TEXT,
-    CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+    RATING INTEGER CHECK (SUPPLIER_RATING BETWEEN 1 AND 5),
+    REASON TEXT
+    );
 
 
 
 CREATE TABLE IF NOT EXISTS ORDER_HISTORY (
     HISTORY_ID SERIAL PRIMARY KEY,
-    CUSTOMER_ID INTEGER NOT NULL REFERENCES USERS(USER_ID) ON DELETE SET NULL,
     ORDER_ID INTEGER NOT NULL REFERENCES ORDERS(ORDER_ID) ON DELETE CASCADE,
+    CUSTOMER_ID INTEGER NOT NULL REFERENCES USERS(USER_ID) ON DELETE SET NULL,
     SUPPLIER_ID INTEGER REFERENCES SUPPLIERS(USER_ID) ON DELETE SET NULL,
     YARD_LOCATION TEXT NOT NULL,
     PRICE INTEGER NOT NULL CHECK (PRICE >= 0),
@@ -467,12 +466,16 @@ $$ LANGUAGE plpgsql;
 -- Parameters:
 --   p_order_id: Order ID to cancel
 --   p_user_id: User ID who is cancelling (for authorization)
+--   p_reason: Reason for cancellation (optional)
 -- Returns: JSON object with code field
 -- Code: 1=Success, 0=Failure
--- If status='accepted', inserts into order_history before deletion
+-- If status is NOT 'open' or 'supplier_timer', inserts into order_history
+-- If status is 'accepted' or 'ride_started', also inserts into ratings with reason
+-- If supplier/driver cancels 'accepted'/'ride_started', supplier rating -0.2
 CREATE OR REPLACE FUNCTION cancel_order(
     p_order_id INTEGER,
-    p_user_id INTEGER
+    p_user_id INTEGER,
+    p_reason TEXT DEFAULT NULL
 )
 RETURNS JSON AS $$
 DECLARE
@@ -499,8 +502,16 @@ BEGIN
         );
     END IF;
     
-    -- If status is 'accepted', insert into order_history
-    IF v_order_record.status = 'accepted' THEN
+    -- Check if order status is 'finished' - cannot cancel finished orders
+    IF v_order_record.status = 'finished' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Cannot cancel a finished order'
+        );
+    END IF;
+    
+    -- If status is NOT 'open' or 'supplier_timer', insert into order_history
+    IF v_order_record.status NOT IN ('open', 'supplier_timer') THEN
         -- Get supplier yard location
         SELECT yard_location INTO v_yard_location
         FROM suppliers
@@ -528,6 +539,29 @@ BEGIN
             v_order_record.created_at,
             CURRENT_TIMESTAMP
         );
+        
+        -- If status is 'accepted' or 'ride_started', also insert into ratings with reason
+        IF v_order_record.status IN ('accepted', 'ride_started') THEN
+            -- Insert into ratings table with reason (rating stays NULL)
+            INSERT INTO ratings (
+                order_id,
+                supplier_id,
+                reason,
+                created_at
+            ) VALUES (
+                v_order_record.order_id,
+                v_order_record.supplier_id,
+                p_reason,
+                CURRENT_TIMESTAMP
+            );
+            
+            -- If canceller is NOT the customer, penalize supplier (rating -0.2)
+            IF p_user_id != v_order_record.customer_id THEN
+                UPDATE suppliers
+                SET rating = GREATEST(rating - 0.2, 0.00)
+                WHERE user_id = v_order_record.supplier_id;
+            END IF;
+        END IF;
     END IF;
     
     -- If driver was assigned, set them as available again

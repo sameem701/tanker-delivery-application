@@ -397,3 +397,209 @@ EXCEPTION
         );
 END;
 $$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Start ride for accepted order
+-- ============================================================================
+-- Purpose: Driver starts the delivery ride after accepting order
+--          Changes status from 'accepted' to 'ride_started'
+-- Parameters:
+--   p_driver_id: Driver user_id starting the ride
+--   p_order_id: Order ID to start ride for
+-- Returns: JSON object with code field
+-- Code: 1=Success, 0=Failure
+-- ============================================================================
+CREATE OR REPLACE FUNCTION start_ride(
+    p_driver_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_status VARCHAR(20);
+    v_order_driver_id INTEGER;
+BEGIN
+    -- Validate inputs
+    IF p_driver_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver ID cannot be null'
+        );
+    END IF;
+    
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Get order status and driver_id
+    SELECT status, driver_id INTO v_order_status, v_order_driver_id
+    FROM orders
+    WHERE order_id = p_order_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found'
+        );
+    END IF;
+    
+    -- Check if this driver owns the order
+    IF v_order_driver_id != p_driver_id THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'This order is not assigned to you'
+        );
+    END IF;
+    
+    -- Check if order status is 'accepted'
+    IF v_order_status != 'accepted' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order status must be accepted to start ride. Current status: ' || v_order_status
+        );
+    END IF;
+    
+    -- Update order status to 'ride_started'
+    UPDATE orders
+    SET status = 'ride_started'
+    WHERE order_id = p_order_id;
+    
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Ride started successfully'
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to start ride: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Finish order/delivery
+-- ============================================================================
+-- Purpose: Driver completes the delivery
+--          Updates order_history, sets status to 'finished', makes driver available
+-- Parameters:
+--   p_driver_id: Driver user_id finishing the order
+--   p_order_id: Order ID to finish
+-- Returns: JSON object with code field
+-- Code: 1=Success, 0=Failure
+-- ============================================================================
+CREATE OR REPLACE FUNCTION finish_order(
+    p_driver_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_record RECORD;
+    v_yard_location TEXT;
+BEGIN
+    -- Validate inputs
+    IF p_driver_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver ID cannot be null'
+        );
+    END IF;
+    
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    -- Get order details
+    SELECT * INTO v_order_record
+    FROM orders
+    WHERE order_id = p_order_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found'
+        );
+    END IF;
+    
+    -- Check if this driver owns the order
+    IF v_order_record.driver_id != p_driver_id THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'This order is not assigned to you'
+        );
+    END IF;
+    
+    -- Check if order status is 'ride_started'
+    IF v_order_record.status != 'ride_started' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order must be in ride_started status to finish. Current status: ' || v_order_record.status
+        );
+    END IF;
+    
+    -- Get supplier yard location
+    SELECT yard_location INTO v_yard_location
+    FROM suppliers
+    WHERE user_id = v_order_record.supplier_id;
+    
+    -- Insert into order_history
+    INSERT INTO order_history (
+        customer_id,
+        order_id,
+        supplier_id,
+        yard_location,
+        price,
+        quantity,
+        status,
+        order_date
+    ) VALUES (
+        v_order_record.customer_id,
+        v_order_record.order_id,
+        v_order_record.supplier_id,
+        COALESCE(v_yard_location, ''),
+        v_order_record.accepted_price,
+        v_order_record.requested_capacity,
+        'completed',
+        v_order_record.order_confirmed_at
+    );
+    
+    -- Insert into ratings table (without rating and reason - customer fills later)
+    INSERT INTO ratings (
+        order_id,
+        supplier_id
+    ) VALUES (
+        v_order_record.order_id,
+        v_order_record.supplier_id
+    );
+    
+    -- Update order status to 'finished'
+    UPDATE orders
+    SET status = 'finished'
+    WHERE order_id = p_order_id;
+    
+    -- Set driver as available again
+    UPDATE supplier_drivers
+    SET available = TRUE
+    WHERE driver_user_id = p_driver_id;
+    
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Order completed successfully'
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to finish order: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;

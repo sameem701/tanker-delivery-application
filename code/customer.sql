@@ -385,3 +385,134 @@ EXCEPTION
         );
 END;
 $$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Submit rating for completed order
+-- ============================================================================
+-- Purpose: Customer rates supplier after order completion
+--          Updates rating in ratings table, recalculates supplier average rating,
+--          and increments supplier's total_orders count
+-- Parameters:
+--   p_customer_id: Customer user_id (for authorization)
+--   p_order_id: Order ID to rate
+--   p_rating: Rating value (1-5)
+-- Returns: JSON object with code field
+-- Code: 1=Success, 0=Failure
+-- ============================================================================
+CREATE OR REPLACE FUNCTION submit_rating(
+    p_customer_id INTEGER,
+    p_order_id INTEGER,
+    p_rating INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_customer_id INTEGER;
+    v_supplier_id INTEGER;
+    v_order_status VARCHAR(20);
+    v_rating_exists BOOLEAN;
+    v_avg_rating DECIMAL(3,2);
+BEGIN
+    -- Validate inputs
+    IF p_customer_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Customer ID cannot be null'
+        );
+    END IF;
+    
+    IF p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order ID cannot be null'
+        );
+    END IF;
+    
+    IF p_rating IS NULL OR p_rating < 1 OR p_rating > 5 THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Rating must be between 1 and 5'
+        );
+    END IF;
+    
+    -- Get order details and verify ownership
+    SELECT customer_id, supplier_id, status 
+    INTO v_order_customer_id, v_supplier_id, v_order_status
+    FROM orders
+    WHERE order_id = p_order_id;
+    
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found'
+        );
+    END IF;
+    
+    -- Verify customer owns this order
+    IF v_order_customer_id != p_customer_id THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'This order does not belong to you'
+        );
+    END IF;
+    
+    -- Verify order is finished
+    IF v_order_status != 'finished' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Can only rate completed orders. Current status: ' || v_order_status
+        );
+    END IF;
+    
+    -- Check if rating already exists
+    SELECT EXISTS(
+        SELECT 1 FROM ratings 
+        WHERE order_id = p_order_id AND rating IS NOT NULL
+    ) INTO v_rating_exists;
+    
+    IF v_rating_exists THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'You have already rated this order'
+        );
+    END IF;
+    
+    -- Update rating in ratings table (reason remains NULL)
+    UPDATE ratings
+    SET rating = p_rating
+    WHERE order_id = p_order_id;
+    
+    -- Increment supplier's total_orders
+    UPDATE suppliers
+    SET total_orders = total_orders + 1
+    WHERE user_id = v_supplier_id;
+    
+    -- Calculate new average rating for supplier
+    SELECT AVG(rating)::DECIMAL(3,2) INTO v_avg_rating
+    FROM ratings
+    WHERE supplier_id = v_supplier_id
+      AND rating IS NOT NULL;
+    
+    -- Update supplier's rating
+    UPDATE suppliers
+    SET rating = COALESCE(v_avg_rating, 5.00)
+    WHERE user_id = v_supplier_id;
+    
+    -- Check if order exists in order_history, if yes delete from orders table
+    IF EXISTS(SELECT 1 FROM order_history WHERE order_id = p_order_id) THEN
+        DELETE FROM orders WHERE order_id = p_order_id;
+    END IF;
+    
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Rating submitted successfully'
+    );
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to submit rating: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
