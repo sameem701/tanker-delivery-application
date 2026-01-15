@@ -131,6 +131,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trigger_relink_driver_on_session_insert ON sessions;
 CREATE TRIGGER trigger_relink_driver_on_session_insert
     AFTER INSERT ON sessions
     FOR EACH ROW

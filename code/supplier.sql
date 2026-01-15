@@ -368,6 +368,7 @@ $$ LANGUAGE plpgsql;
 -- Fires: After INSERT, UPDATE, or DELETE on orders table
 -- Action: Sends NOTIFY signal to Node.js backend
 -- ============================================================================
+DROP TRIGGER IF EXISTS trigger_notify_orders_updated ON orders;
 CREATE TRIGGER trigger_notify_orders_updated
     AFTER INSERT OR UPDATE OR DELETE ON orders
     FOR EACH ROW
@@ -562,6 +563,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trigger_delete_bids_on_acceptance ON orders;
 CREATE TRIGGER trigger_delete_bids_on_acceptance
     AFTER UPDATE ON orders
     FOR EACH ROW
@@ -588,6 +590,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trigger_notify_driver_assignment_updated ON driver_assignment;
 DROP TRIGGER IF EXISTS trigger_notify_driver_assignment_updated ON driver_assignment;
 CREATE TRIGGER trigger_notify_driver_assignment_updated
     AFTER INSERT OR UPDATE OR DELETE ON driver_assignment

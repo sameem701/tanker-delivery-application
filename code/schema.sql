@@ -1,3 +1,23 @@
+-- ============================================================================
+-- DROP EXISTING TABLES (in reverse dependency order)
+-- ============================================================================
+DROP TABLE IF EXISTS sessions CASCADE;
+DROP TABLE IF EXISTS order_history CASCADE;
+DROP TABLE IF EXISTS bids CASCADE;
+DROP TABLE IF EXISTS driver_assignment CASCADE;
+DROP TABLE IF EXISTS orders CASCADE;
+DROP TABLE IF EXISTS quantity_pricing CASCADE;
+DROP TABLE IF EXISTS supplier_drivers CASCADE;
+DROP TABLE IF EXISTS suppliers CASCADE;
+DROP TABLE IF EXISTS pending_users CASCADE;
+DROP TABLE IF EXISTS customer_address CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+
+
+-- ============================================================================
+-- CREATE TABLES
+-- ============================================================================
+
 CREATE TABLE IF NOT EXISTS users (
     user_id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
@@ -152,6 +172,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trigger_unlink_driver_on_session_delete ON sessions;
 DROP TRIGGER IF EXISTS trigger_unlink_driver_on_session_delete ON sessions;
 CREATE TRIGGER trigger_unlink_driver_on_session_delete
     AFTER DELETE ON sessions
