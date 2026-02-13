@@ -17,7 +17,7 @@ const register = async (req, res) => {
     // Check if user already exists
     const userExists = await query(
       'SELECT user_id, role FROM users WHERE phone = $1',
-      [phone]
+      [phone]       // safe from sql injection
     );
 
     if (userExists.rows.length > 0) {
