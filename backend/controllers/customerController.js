@@ -4,9 +4,10 @@ const { sendSuccess, sendError } = require('../utils/responseHelper');
 // @desc    Create/Start a new order
 const startOrder = async (req, res) => {
   try {
-    const { customer_id, delivery_location, requested_capacity, customer_bid_price } = req.body;
+    const customer_id = req.user.user_id; // From auth middleware
+    const { delivery_location, requested_capacity, customer_bid_price } = req.body;
 
-    if (!customer_id || !delivery_location || !requested_capacity || !customer_bid_price) {
+    if (!delivery_location || !requested_capacity || !customer_bid_price) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -35,9 +36,10 @@ const startOrder = async (req, res) => {
 // @desc    Accept a supplier's bid
 const acceptBid = async (req, res) => {
   try {
-    const { bid_id, customer_id } = req.body;
+    const customer_id = req.user.user_id; // From auth middleware
+    const { bid_id } = req.body;
 
-    if (!bid_id || !customer_id) {
+    if (!bid_id) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -64,16 +66,17 @@ const acceptBid = async (req, res) => {
 // @desc    Get order details for customer
 const getOrderDetails = async (req, res) => {
   try {
-    const { customer_id, order_id } = req.params;
+    const customer_id = req.user.user_id; // From auth middleware
+    const { order_id } = req.params;
 
-    if (!customer_id || !order_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required parameters');
     }
 
     // Call get_order_details_customer function
     const result = await query(
       'SELECT get_order_details_customer($1, $2) as result',
-      [parseInt(customer_id), parseInt(order_id)]
+      [customer_id, parseInt(order_id)]
     );
 
     const response = result.rows[0].result;
@@ -93,9 +96,10 @@ const getOrderDetails = async (req, res) => {
 // @desc    Submit rating for completed order
 const submitRating = async (req, res) => {
   try {
-    const { customer_id, order_id, rating } = req.body;
+    const customer_id = req.user.user_id; // From auth middleware
+    const { order_id, rating } = req.body;
 
-    if (!customer_id || !order_id || !rating) {
+    if (!order_id || !rating) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -126,9 +130,10 @@ const submitRating = async (req, res) => {
 // @desc    Cancel order
 const cancelOrder = async (req, res) => {
   try {
-    const { order_id, user_id, reason } = req.body;
+    const user_id = req.user.user_id; // From auth middleware
+    const { order_id, reason } = req.body;
 
-    if (!order_id || !user_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -155,16 +160,12 @@ const cancelOrder = async (req, res) => {
 // @desc    View past orders
 const viewPastOrders = async (req, res) => {
   try {
-    const { user_id } = req.params;
-
-    if (!user_id) {
-      return sendError(res, 400, 'User ID is required');
-    }
+    const user_id = req.user.user_id; // From auth middleware
 
     // Call view_past_orders function
     const result = await query(
       'SELECT view_past_orders($1) as result',
-      [parseInt(user_id)]
+      [user_id]
     );
 
     const response = result.rows[0].result;
@@ -184,16 +185,17 @@ const viewPastOrders = async (req, res) => {
 // @desc    View past order details
 const viewPastOrderDetails = async (req, res) => {
   try {
-    const { customer_id, order_id } = req.params;
+    const customer_id = req.user.user_id; // From auth middleware
+    const { order_id } = req.params;
 
-    if (!customer_id || !order_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required parameters');
     }
 
     // Call view_past_order_details_customer function
     const result = await query(
       'SELECT view_past_order_details_customer($1, $2) as result',
-      [parseInt(customer_id), parseInt(order_id)]
+      [customer_id, parseInt(order_id)]
     );
 
     const response = result.rows[0].result;

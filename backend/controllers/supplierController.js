@@ -4,16 +4,12 @@ const { sendSuccess, sendError } = require('../utils/responseHelper');
 // @desc    Check if supplier has any drivers registered
 const checkHasDrivers = async (req, res) => {
   try {
-    const { supplier_id } = req.params;
-
-    if (!supplier_id) {
-      return sendError(res, 400, 'Supplier ID is required');
-    }
+    const supplier_id = req.user.user_id; // From auth middleware
 
     // Call check_supplier_has_drivers function
     const result = await query(
       'SELECT check_supplier_has_drivers($1) as result',
-      [parseInt(supplier_id)]
+      [supplier_id]
     );
 
     const response = result.rows[0].result;
@@ -29,16 +25,12 @@ const checkHasDrivers = async (req, res) => {
 // @desc    Check if supplier has active drivers
 const checkHasActiveDrivers = async (req, res) => {
   try {
-    const { supplier_id } = req.params;
-
-    if (!supplier_id) {
-      return sendError(res, 400, 'Supplier ID is required');
-    }
+    const supplier_id = req.user.user_id; // From auth middleware
 
     // Call check_supplier_has_active_drivers function
     const result = await query(
       'SELECT check_supplier_has_active_drivers($1) as result',
-      [parseInt(supplier_id)]
+      [supplier_id]
     );
 
     const response = result.rows[0].result;
@@ -99,9 +91,10 @@ const viewOrderDetails = async (req, res) => {
 // @desc    Send bid for an order
 const sendBid = async (req, res) => {
   try {
-    const { order_id, supplier_id, bid_price } = req.body;
+    const supplier_id = req.user.user_id; // From auth middleware
+    const { order_id, bid_price } = req.body;
 
-    if (!order_id || !supplier_id || !bid_price) {
+    if (!order_id || !bid_price) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -128,16 +121,17 @@ const sendBid = async (req, res) => {
 // @desc    Get available drivers for supplier with order status
 const getAvailableDrivers = async (req, res) => {
   try {
-    const { supplier_id, order_id } = req.params;
+    const supplier_id = req.user.user_id; // From auth middleware
+    const { order_id } = req.params;
 
-    if (!supplier_id || !order_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required parameters');
     }
 
     // Call get_available_drivers_for_supplier function
     const result = await query(
       'SELECT get_available_drivers_for_supplier($1, $2) as result',
-      [parseInt(supplier_id), parseInt(order_id)]
+      [supplier_id, parseInt(order_id)]
     );
 
     const response = result.rows[0].result;
@@ -157,9 +151,10 @@ const getAvailableDrivers = async (req, res) => {
 // @desc    Assign driver to order
 const assignDriver = async (req, res) => {
   try {
-    const { order_id, supplier_id, driver_id } = req.body;
+    const supplier_id = req.user.user_id; // From auth middleware
+    const { order_id, driver_id } = req.body;
 
-    if (!order_id || !supplier_id || !driver_id) {
+    if (!order_id || !driver_id) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -186,16 +181,17 @@ const assignDriver = async (req, res) => {
 // @desc    Get order details for supplier
 const getOrderDetails = async (req, res) => {
   try {
-    const { supplier_id, order_id } = req.params;
+    const supplier_id = req.user.user_id; // From auth middleware
+    const { order_id } = req.params;
 
-    if (!supplier_id || !order_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required parameters');
     }
 
     // Call get_order_details_supplier function
     const result = await query(
       'SELECT get_order_details_supplier($1, $2) as result',
-      [parseInt(supplier_id), parseInt(order_id)]
+      [supplier_id, parseInt(order_id)]
     );
 
     const response = result.rows[0].result;
@@ -215,16 +211,12 @@ const getOrderDetails = async (req, res) => {
 // @desc    Get active orders for supplier
 const getActiveOrders = async (req, res) => {
   try {
-    const { supplier_id } = req.params;
-
-    if (!supplier_id) {
-      return sendError(res, 400, 'Supplier ID is required');
-    }
+    const supplier_id = req.user.user_id; // From auth middleware
 
     // Call get_active_orders_supplier function
     const result = await query(
       'SELECT get_active_orders_supplier($1) as result',
-      [parseInt(supplier_id)]
+      [supplier_id]
     );
 
     const response = result.rows[0].result;
@@ -244,9 +236,10 @@ const getActiveOrders = async (req, res) => {
 // @desc    Cancel order
 const cancelOrder = async (req, res) => {
   try {
-    const { order_id, user_id, reason } = req.body;
+    const user_id = req.user.user_id; // From auth middleware
+    const { order_id, reason } = req.body;
 
-    if (!order_id || !user_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -273,16 +266,12 @@ const cancelOrder = async (req, res) => {
 // @desc    View past orders
 const viewPastOrders = async (req, res) => {
   try {
-    const { user_id } = req.params;
-
-    if (!user_id) {
-      return sendError(res, 400, 'User ID is required');
-    }
+    const user_id = req.user.user_id; // From auth middleware
 
     // Call view_past_orders function
     const result = await query(
       'SELECT view_past_orders($1) as result',
-      [parseInt(user_id)]
+      [user_id]
     );
 
     const response = result.rows[0].result;
@@ -302,16 +291,17 @@ const viewPastOrders = async (req, res) => {
 // @desc    View past order details
 const viewPastOrderDetails = async (req, res) => {
   try {
-    const { supplier_id, order_id } = req.params;
+    const supplier_id = req.user.user_id; // From auth middleware
+    const { order_id } = req.params;
 
-    if (!supplier_id || !order_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required parameters');
     }
 
     // Call view_past_order_details_supplier function
     const result = await query(
       'SELECT view_past_order_details_supplier($1, $2) as result',
-      [parseInt(supplier_id), parseInt(order_id)]
+      [supplier_id, parseInt(order_id)]
     );
 
     const response = result.rows[0].result;
@@ -331,10 +321,11 @@ const viewPastOrderDetails = async (req, res) => {
 // @desc    Add driver phone numbers to supplier_drivers table
 const addDriverPhones = async (req, res) => {
   try {
-    const { supplier_id, driver_phones } = req.body;
+    const supplier_id = req.user.user_id; // From auth middleware
+    const { driver_phones } = req.body;
 
-    if (!supplier_id || !driver_phones || !Array.isArray(driver_phones)) {
-      return sendError(res, 400, 'Supplier ID and driver phones array required');
+    if (!driver_phones || !Array.isArray(driver_phones)) {
+      return sendError(res, 400, 'Driver phones array required');
     }
 
     // Insert driver phone numbers

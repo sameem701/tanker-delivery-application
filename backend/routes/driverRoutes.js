@@ -1,71 +1,66 @@
 const express = require('express');
 const router = express.Router();
 const { body } = require('express-validator');
+const { authMiddleware, roleCheck } = require('../middleware/authMiddleware');
 const driverController = require('../controllers/driverController');
 
 // @route   POST /api/drivers/confirm-order
 // @desc    Confirm order (race-safe)
-// @access  Public
-router.post('/confirm-order', [
-  body('order_id').isInt().withMessage('Order ID is required'),
-  body('driver_id').isInt().withMessage('Driver ID is required')
+// @access  Private (Driver)
+router.post('/confirm-order', authMiddleware, roleCheck(['driver']), [
+  body('order_id').isInt().withMessage('Order ID is required')
 ], driverController.confirmOrder);
 
 // @route   POST /api/drivers/reject-order
 // @desc    Reject assigned order
-// @access  Public
-router.post('/reject-order', [
+// @access  Private (Driver)
+router.post('/reject-order', authMiddleware, roleCheck(['driver']), [
   body('order_id').isInt().withMessage('Order ID is required'),
-  body('driver_id').isInt().withMessage('Driver ID is required'),
   body('reason').optional()
 ], driverController.rejectOrder);
 
-// @route   GET /api/drivers/order-details/:driver_id/:order_id
+// @route   GET /api/drivers/order-details/:order_id
 // @desc    Get order details for driver
-// @access  Public
-router.get('/order-details/:driver_id/:order_id', driverController.getOrderDetails);
+// @access  Private (Driver)
+router.get('/order-details/:order_id', authMiddleware, roleCheck(['driver']), driverController.getOrderDetails);
 
 // @route   POST /api/drivers/start-ride
 // @desc    Start ride for order
-// @access  Public
-router.post('/start-ride', [
-  body('order_id').isInt().withMessage('Order ID is required'),
-  body('driver_id').isInt().withMessage('Driver ID is required')
+// @access  Private (Driver)
+router.post('/start-ride', authMiddleware, roleCheck(['driver']), [
+  body('order_id').isInt().withMessage('Order ID is required')
 ], driverController.startRide);
 
 // @route   POST /api/drivers/mark-reached
 // @desc    Mark order as reached destination
-// @access  Public
-router.post('/mark-reached', [
-  body('order_id').isInt().withMessage('Order ID is required'),
-  body('driver_id').isInt().withMessage('Driver ID is required')
+// @access  Private (Driver)
+router.post('/mark-reached', authMiddleware, roleCheck(['driver']), [
+  body('order_id').isInt().withMessage('Order ID is required')
 ], driverController.markReached);
 
 // @route   POST /api/drivers/finish-order
 // @desc    Finish order
-// @access  Public
-router.post('/finish-order', [
-  body('order_id').isInt().withMessage('Order ID is required'),
-  body('driver_id').isInt().withMessage('Driver ID is required')
+// @access  Private (Driver)
+router.post('/finish-order', authMiddleware, roleCheck(['driver']), [
+  body('order_id').isInt().withMessage('Order ID is required')
 ], driverController.finishOrder);
 
 // @route   POST /api/drivers/cancel-order
 // @desc    Cancel order
-// @access  Public
-router.post('/cancel-order', [
+// @access  Private (Driver)
+router.post('/cancel-order', authMiddleware, roleCheck(['driver']), [
   body('order_id').isInt().withMessage('Order ID is required'),
-  body('user_id').isInt().withMessage('User ID is required'),
   body('reason').optional()
 ], driverController.cancelOrder);
 
-// @route   GET /api/drivers/past-orders/:user_id
+// @route   GET /api/drivers/past-orders
 // @desc    View past orders
-// @access  Public
-router.get('/past-orders/:user_id', driverController.viewPastOrders);
+// @access  Private (Driver)
+router.get('/past-orders', authMiddleware, roleCheck(['driver']), driverController.viewPastOrders);
 
-// @route   GET /api/drivers/past-order-details/:driver_id/:order_id
+// @route   GET /api/drivers/past-order-details/:order_id
 // @desc    View past order details
-// @access  Public
-router.get('/past-order-details/:driver_id/:order_id', driverController.viewPastOrderDetails);
+// @access  Private (Driver)
+router.get('/past-order-details/:order_id', authMiddleware, roleCheck(['driver']), driverController.viewPastOrderDetails);
 
 module.exports = router;

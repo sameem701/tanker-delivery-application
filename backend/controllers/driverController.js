@@ -4,9 +4,10 @@ const { sendSuccess, sendError } = require('../utils/responseHelper');
 // @desc    Confirm order assignment
 const confirmOrder = async (req, res) => {
   try {
-    const { driver_id, order_id } = req.body;
+    const driver_id = req.user.user_id; // From auth middleware
+    const { order_id } = req.body;
 
-    if (!driver_id || !order_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -33,9 +34,10 @@ const confirmOrder = async (req, res) => {
 // @desc    Reject order assignment
 const rejectOrder = async (req, res) => {
   try {
-    const { driver_id, order_id } = req.body;
+    const driver_id = req.user.user_id; // From auth middleware
+    const { order_id } = req.body;
 
-    if (!driver_id || !order_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -62,16 +64,17 @@ const rejectOrder = async (req, res) => {
 // @desc    Get order details for driver
 const getOrderDetails = async (req, res) => {
   try {
-    const { driver_id, order_id } = req.params;
+    const driver_id = req.user.user_id; // From auth middleware
+    const { order_id } = req.params;
 
-    if (!driver_id || !order_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required parameters');
     }
 
     // Call get_order_details_driver function
     const result = await query(
       'SELECT get_order_details_driver($1, $2) as result',
-      [parseInt(driver_id), parseInt(order_id)]
+      [driver_id, parseInt(order_id)]
     );
 
     const response = result.rows[0].result;
@@ -91,9 +94,10 @@ const getOrderDetails = async (req, res) => {
 // @desc    Start ride
 const startRide = async (req, res) => {
   try {
-    const { driver_id, order_id } = req.body;
+    const driver_id = req.user.user_id; // From auth middleware
+    const { order_id } = req.body;
 
-    if (!driver_id || !order_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -120,9 +124,10 @@ const startRide = async (req, res) => {
 // @desc    Mark order as reached
 const markReached = async (req, res) => {
   try {
-    const { driver_id, order_id } = req.body;
+    const driver_id = req.user.user_id; // From auth middleware
+    const { order_id } = req.body;
 
-    if (!driver_id || !order_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -149,9 +154,10 @@ const markReached = async (req, res) => {
 // @desc    Finish order/delivery
 const finishOrder = async (req, res) => {
   try {
-    const { driver_id, order_id } = req.body;
+    const driver_id = req.user.user_id; // From auth middleware
+    const { order_id } = req.body;
 
-    if (!driver_id || !order_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -178,9 +184,10 @@ const finishOrder = async (req, res) => {
 // @desc    Cancel order
 const cancelOrder = async (req, res) => {
   try {
-    const { order_id, user_id, reason } = req.body;
+    const user_id = req.user.user_id; // From auth middleware
+    const { order_id, reason } = req.body;
 
-    if (!order_id || !user_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required fields');
     }
 
@@ -207,16 +214,12 @@ const cancelOrder = async (req, res) => {
 // @desc    View past orders
 const viewPastOrders = async (req, res) => {
   try {
-    const { user_id } = req.params;
-
-    if (!user_id) {
-      return sendError(res, 400, 'User ID is required');
-    }
+    const user_id = req.user.user_id; // From auth middleware
 
     // Call view_past_orders function
     const result = await query(
       'SELECT view_past_orders($1) as result',
-      [parseInt(user_id)]
+      [user_id]
     );
 
     const response = result.rows[0].result;
@@ -236,16 +239,17 @@ const viewPastOrders = async (req, res) => {
 // @desc    View past order details
 const viewPastOrderDetails = async (req, res) => {
   try {
-    const { driver_id, order_id } = req.params;
+    const driver_id = req.user.user_id; // From auth middleware
+    const { order_id } = req.params;
 
-    if (!driver_id || !order_id) {
+    if (!order_id) {
       return sendError(res, 400, 'Missing required parameters');
     }
 
     // Call view_past_order_details_driver function
     const result = await query(
       'SELECT view_past_order_details_driver($1, $2) as result',
-      [parseInt(driver_id), parseInt(order_id)]
+      [driver_id, parseInt(order_id)]
     );
 
     const response = result.rows[0].result;

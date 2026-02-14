@@ -15,7 +15,9 @@ router.post('/check-phone', [
 // @access  Public
 router.post('/store-otp', [
   body('phone_number').isMobilePhone().withMessage('Please enter a valid phone number'),
-  body('otp').isLength({ min: 4, max: 6 }).withMessage('OTP must be 4-6 digits')
+  body('otp')
+  .isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
+  .isNumeric().withMessage('OTP must contain only numbers')
 ], authController.storeOTP);
 
 // @route   POST /api/auth/verify-otp
