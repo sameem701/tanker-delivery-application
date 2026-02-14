@@ -1,111 +1,374 @@
 const { query } = require('../config/database');
 const { sendSuccess, sendError } = require('../utils/responseHelper');
 
-// @desc    Get all suppliers
-const getAllSuppliers = async (req, res) => {
+// @desc    Check if supplier has any drivers registered
+const checkHasDrivers = async (req, res) => {
   try {
+    const { supplier_id } = req.params;
+
+    if (!supplier_id) {
+      return sendError(res, 400, 'Supplier ID is required');
+    }
+
+    // Call check_supplier_has_drivers function
     const result = await query(
-      `SELECT u.user_id, u.name, u.phone, u.verified, u.created_at,
-              s.yard_location, s.business_contact, s.rating, s.total_orders
-       FROM users u
-       INNER JOIN suppliers s ON u.user_id = s.user_id
-       WHERE u.role = 'supplier'
-       ORDER BY s.rating DESC, u.created_at DESC`
+      'SELECT check_supplier_has_drivers($1) as result',
+      [parseInt(supplier_id)]
     );
 
-    return sendSuccess(res, 200, 'Suppliers retrieved successfully', result.rows);
+    const response = result.rows[0].result;
+
+    return sendSuccess(res, 200, response.message, { has_drivers: response.code === 1 });
+
   } catch (error) {
-    console.error('Get all suppliers error:', error);
-    return sendError(res, 500, 'Error retrieving suppliers', error.message);
+    console.error('Check has drivers error:', error);
+    return sendError(res, 500, 'Error checking drivers', error.message);
   }
 };
 
-// @desc    Get supplier by ID
-const getSupplierById = async (req, res) => {
+// @desc    Check if supplier has active drivers
+const checkHasActiveDrivers = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { supplier_id } = req.params;
 
-    const result = await query(
-      `SELECT u.user_id, u.name, u.phone, u.verified, u.created_at,
-              s.yard_location, s.business_contact, s.cnic_front_path, 
-              s.cnic_back_path, s.rating, s.total_orders
-       FROM users u
-       INNER JOIN suppliers s ON u.user_id = s.user_id
-       WHERE u.user_id = $1 AND u.role = 'supplier'`,
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      return sendError(res, 404, 'Supplier not found');
+    if (!supplier_id) {
+      return sendError(res, 400, 'Supplier ID is required');
     }
 
-    // Get supplier's drivers
-    const drivers = await query(
-      `SELECT sd.driver_phone_num, sd.driver_user_id, sd.available, sd.joined_at,
-              u.name as driver_name
-       FROM supplier_drivers sd
-       LEFT JOIN users u ON sd.driver_user_id = u.user_id
-       WHERE sd.supplier_user_id = $1`,
-      [id]
+    // Call check_supplier_has_active_drivers function
+    const result = await query(
+      'SELECT check_supplier_has_active_drivers($1) as result',
+      [parseInt(supplier_id)]
     );
 
-    const supplierData = {
-      ...result.rows[0],
-      drivers: drivers.rows
-    };
+    const response = result.rows[0].result;
 
-    return sendSuccess(res, 200, 'Supplier retrieved successfully', supplierData);
+    return sendSuccess(res, 200, response.message, { has_active_drivers: response.code === 1 });
+
   } catch (error) {
-    console.error('Get supplier by ID error:', error);
-    return sendError(res, 500, 'Error retrieving supplier', error.message);
+    console.error('Check has active drivers error:', error);
+    return sendError(res, 500, 'Error checking active drivers', error.message);
   }
 };
 
-// @desc    Update supplier
-const updateSupplier = async (req, res) => {
+// @desc    View all available open orders
+const viewAvailableOrders = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { name, yard_location, business_contact } = req.body;
+    // Call view_available_orders function
+    const result = await query('SELECT view_available_orders() as result');
 
-    // Update user name if provided
-    if (name) {
-      await query(
-        'UPDATE users SET name = $1 WHERE user_id = $2 AND role = $3',
-        [name, id, 'supplier']
-      );
-    }
+    const orders = result.rows[0].result;
 
-    // Update supplier details if provided
-    const updates = [];
-    const values = [];
-    let paramCount = 1;
+    return sendSuccess(res, 200, 'Available orders retrieved', orders);
 
-    if (yard_location) {
-      updates.push(`yard_location = $${paramCount++}`);
-      values.push(yard_location);
-    }
-    if (business_contact) {
-      updates.push(`business_contact = $${paramCount++}`);
-      values.push(business_contact);
-    }
-
-    if (updates.length > 0) {
-      values.push(id);
-      await query(
-        `UPDATE suppliers SET ${updates.join(', ')} WHERE user_id = $${paramCount}`,
-        values
-      );
-    }
-
-    return sendSuccess(res, 200, 'Supplier updated successfully');
   } catch (error) {
-    console.error('Update supplier error:', error);
-    return sendError(res, 500, 'Error updating supplier', error.message);
+    console.error('View available orders error:', error);
+    return sendError(res, 500, 'Error retrieving orders', error.message);
+  }
+};
+
+// @desc    View specific order details
+const viewOrderDetails = async (req, res) => {
+  try {
+    const { order_id } = req.params;
+
+    if (!order_id) {
+      return sendError(res, 400, 'Order ID is required');
+    }
+
+    // Call view_order_details function
+    const result = await query(
+      'SELECT view_order_details($1) as result',
+      [parseInt(order_id)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, 'Order details retrieved', response);
+    } else {
+      return sendError(res, 404, response.message);
+    }
+
+  } catch (error) {
+    console.error('View order details error:', error);
+    return sendError(res, 500, 'Error retrieving order details', error.message);
+  }
+};
+
+// @desc    Send bid for an order
+const sendBid = async (req, res) => {
+  try {
+    const { order_id, supplier_id, bid_price } = req.body;
+
+    if (!order_id || !supplier_id || !bid_price) {
+      return sendError(res, 400, 'Missing required fields');
+    }
+
+    // Call send_bid function
+    const result = await query(
+      'SELECT send_bid($1, $2, $3) as result',
+      [order_id, supplier_id, bid_price]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, response.message);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
+  } catch (error) {
+    console.error('Send bid error:', error);
+    return sendError(res, 500, 'Error sending bid', error.message);
+  }
+};
+
+// @desc    Get available drivers for supplier with order status
+const getAvailableDrivers = async (req, res) => {
+  try {
+    const { supplier_id, order_id } = req.params;
+
+    if (!supplier_id || !order_id) {
+      return sendError(res, 400, 'Missing required parameters');
+    }
+
+    // Call get_available_drivers_for_supplier function
+    const result = await query(
+      'SELECT get_available_drivers_for_supplier($1, $2) as result',
+      [parseInt(supplier_id), parseInt(order_id)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, 'Drivers retrieved', response.drivers);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
+  } catch (error) {
+    console.error('Get available drivers error:', error);
+    return sendError(res, 500, 'Error retrieving drivers', error.message);
+  }
+};
+
+// @desc    Assign driver to order
+const assignDriver = async (req, res) => {
+  try {
+    const { order_id, supplier_id, driver_id } = req.body;
+
+    if (!order_id || !supplier_id || !driver_id) {
+      return sendError(res, 400, 'Missing required fields');
+    }
+
+    // Call assign_driver_to_order function
+    const result = await query(
+      'SELECT assign_driver_to_order($1, $2, $3) as result',
+      [order_id, supplier_id, driver_id]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, response.message);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
+  } catch (error) {
+    console.error('Assign driver error:', error);
+    return sendError(res, 500, 'Error assigning driver', error.message);
+  }
+};
+
+// @desc    Get order details for supplier
+const getOrderDetails = async (req, res) => {
+  try {
+    const { supplier_id, order_id } = req.params;
+
+    if (!supplier_id || !order_id) {
+      return sendError(res, 400, 'Missing required parameters');
+    }
+
+    // Call get_order_details_supplier function
+    const result = await query(
+      'SELECT get_order_details_supplier($1, $2) as result',
+      [parseInt(supplier_id), parseInt(order_id)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, 'Order details retrieved', response);
+    } else {
+      return sendError(res, 404, response.message);
+    }
+
+  } catch (error) {
+    console.error('Get order details error:', error);
+    return sendError(res, 500, 'Error retrieving order details', error.message);
+  }
+};
+
+// @desc    Get active orders for supplier
+const getActiveOrders = async (req, res) => {
+  try {
+    const { supplier_id } = req.params;
+
+    if (!supplier_id) {
+      return sendError(res, 400, 'Supplier ID is required');
+    }
+
+    // Call get_active_orders_supplier function
+    const result = await query(
+      'SELECT get_active_orders_supplier($1) as result',
+      [parseInt(supplier_id)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, 'Active orders retrieved', response.orders);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
+  } catch (error) {
+    console.error('Get active orders error:', error);
+    return sendError(res, 500, 'Error retrieving active orders', error.message);
+  }
+};
+
+// @desc    Cancel order
+const cancelOrder = async (req, res) => {
+  try {
+    const { order_id, user_id, reason } = req.body;
+
+    if (!order_id || !user_id) {
+      return sendError(res, 400, 'Missing required fields');
+    }
+
+    // Call cancel_order function
+    const result = await query(
+      'SELECT cancel_order($1, $2, $3) as result',
+      [order_id, user_id, reason || null]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, response.message);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
+  } catch (error) {
+    console.error('Cancel order error:', error);
+    return sendError(res, 500, 'Error cancelling order', error.message);
+  }
+};
+
+// @desc    View past orders
+const viewPastOrders = async (req, res) => {
+  try {
+    const { user_id } = req.params;
+
+    if (!user_id) {
+      return sendError(res, 400, 'User ID is required');
+    }
+
+    // Call view_past_orders function
+    const result = await query(
+      'SELECT view_past_orders($1) as result',
+      [parseInt(user_id)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, 'Past orders retrieved', response.orders);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
+  } catch (error) {
+    console.error('View past orders error:', error);
+    return sendError(res, 500, 'Error retrieving past orders', error.message);
+  }
+};
+
+// @desc    View past order details
+const viewPastOrderDetails = async (req, res) => {
+  try {
+    const { supplier_id, order_id } = req.params;
+
+    if (!supplier_id || !order_id) {
+      return sendError(res, 400, 'Missing required parameters');
+    }
+
+    // Call view_past_order_details_supplier function
+    const result = await query(
+      'SELECT view_past_order_details_supplier($1, $2) as result',
+      [parseInt(supplier_id), parseInt(order_id)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, 'Order details retrieved', response.order);
+    } else {
+      return sendError(res, 404, response.message);
+    }
+
+  } catch (error) {
+    console.error('View past order details error:', error);
+    return sendError(res, 500, 'Error retrieving order details', error.message);
+  }
+};
+
+// @desc    Add driver phone numbers to supplier_drivers table
+const addDriverPhones = async (req, res) => {
+  try {
+    const { supplier_id, driver_phones } = req.body;
+
+    if (!supplier_id || !driver_phones || !Array.isArray(driver_phones)) {
+      return sendError(res, 400, 'Supplier ID and driver phones array required');
+    }
+
+    // Insert driver phone numbers
+    const insertPromises = driver_phones.map(phone =>
+      query(
+        `INSERT INTO supplier_drivers (driver_phone_num, supplier_user_id, driver_user_id, available)
+         VALUES ($1, $2, NULL, TRUE)
+         ON CONFLICT (driver_phone_num, supplier_user_id) DO NOTHING`,
+        [phone, supplier_id]
+      )
+    );
+
+    await Promise.all(insertPromises);
+
+    return sendSuccess(res, 201, 'Driver phone numbers added successfully');
+
+  } catch (error) {
+    console.error('Add driver phones error:', error);
+    return sendError(res, 500, 'Error adding driver phones', error.message);
   }
 };
 
 module.exports = {
-  getAllSuppliers,
-  getSupplierById,
-  updateSupplier
+  checkHasDrivers,
+  checkHasActiveDrivers,
+  viewAvailableOrders,
+  viewOrderDetails,
+  sendBid,
+  getAvailableDrivers,
+  assignDriver,
+  getOrderDetails,
+  getActiveOrders,
+  cancelOrder,
+  viewPastOrders,
+  viewPastOrderDetails,
+  addDriverPhones
 };

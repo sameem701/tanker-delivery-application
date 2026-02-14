@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- ============================================================================
 -- TRIGGER: Auto set driver_user_id to NULL when driver's session is deleted
 -- ============================================================================
--- Purpose: When a driver logs out (session deleted), automatically mark them
+-- Purpose: When a driver deletes app (session deleted), automatically mark them
 --          as inactive in supplier_drivers table by setting driver_user_id to NULL
 --          This allows seamless re-linking when driver returns
 -- ============================================================================

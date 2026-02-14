@@ -1,103 +1,221 @@
 const { query } = require('../config/database');
 const { sendSuccess, sendError } = require('../utils/responseHelper');
 
-// @desc    Get all customers
-const getAllCustomers = async (req, res) => {
+// @desc    Create/Start a new order
+const startOrder = async (req, res) => {
   try {
+    const { customer_id, delivery_location, requested_capacity, customer_bid_price } = req.body;
+
+    if (!customer_id || !delivery_location || !requested_capacity || !customer_bid_price) {
+      return sendError(res, 400, 'Missing required fields');
+    }
+
+    // Call START_ORDER function
     const result = await query(
-      `SELECT u.user_id, u.name, u.phone, u.verified, ca.home_address
-       FROM users u
-       LEFT JOIN customer_address ca ON u.user_id = ca.user_id
-       WHERE u.role = 'customer'
-       ORDER BY u.created_at DESC`
+      'SELECT START_ORDER($1, $2, $3, $4) as result',
+      [customer_id, delivery_location, requested_capacity, customer_bid_price]
     );
 
-    return sendSuccess(res, 200, 'Customers retrieved successfully', result.rows);
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 201, response.message, {
+        order_id: response.order_id
+      });
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
   } catch (error) {
-    console.error('Get all customers error:', error);
-    return sendError(res, 500, 'Error retrieving customers', error.message);
+    console.error('Start order error:', error);
+    return sendError(res, 500, 'Error creating order', error.message);
   }
 };
 
-// @desc    Get customer by ID
-const getCustomerById = async (req, res) => {
+// @desc    Accept a supplier's bid
+const acceptBid = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { bid_id, customer_id } = req.body;
 
-    const result = await query(
-      `SELECT u.user_id, u.name, u.phone, u.verified, u.created_at, ca.home_address
-       FROM users u
-       LEFT JOIN customer_address ca ON u.user_id = ca.user_id
-       WHERE u.user_id = $1 AND u.role = 'customer'`,
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      return sendError(res, 404, 'Customer not found');
+    if (!bid_id || !customer_id) {
+      return sendError(res, 400, 'Missing required fields');
     }
 
-    return sendSuccess(res, 200, 'Customer retrieved successfully', result.rows[0]);
+    // Call accept_bid function
+    const result = await query(
+      'SELECT accept_bid($1, $2) as result',
+      [bid_id, customer_id]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, response.message);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
   } catch (error) {
-    console.error('Get customer by ID error:', error);
-    return sendError(res, 500, 'Error retrieving customer', error.message);
+    console.error('Accept bid error:', error);
+    return sendError(res, 500, 'Error accepting bid', error.message);
   }
 };
 
-// @desc    Update customer
-const updateCustomer = async (req, res) => {
+// @desc    Get order details for customer
+const getOrderDetails = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { name, home_address } = req.body;
+    const { customer_id, order_id } = req.params;
 
-    // Update user name if provided
-    if (name) {
-      await query(
-        'UPDATE users SET name = $1 WHERE user_id = $2 AND role = $3',
-        [name, id, 'customer']
-      );
+    if (!customer_id || !order_id) {
+      return sendError(res, 400, 'Missing required parameters');
     }
 
-    // Update home address if provided
-    if (home_address) {
-      await query(
-        `INSERT INTO customer_address (user_id, home_address)
-         VALUES ($1, $2)
-         ON CONFLICT (user_id) DO UPDATE SET home_address = $2`,
-        [id, home_address]
-      );
+    // Call get_order_details_customer function
+    const result = await query(
+      'SELECT get_order_details_customer($1, $2) as result',
+      [parseInt(customer_id), parseInt(order_id)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, 'Order details retrieved', response);
+    } else {
+      return sendError(res, 404, response.message);
     }
 
-    return sendSuccess(res, 200, 'Customer updated successfully');
   } catch (error) {
-    console.error('Update customer error:', error);
-    return sendError(res, 500, 'Error updating customer', error.message);
+    console.error('Get order details error:', error);
+    return sendError(res, 500, 'Error retrieving order details', error.message);
   }
 };
 
-// @desc    Delete customer
-const deleteCustomer = async (req, res) => {
+// @desc    Submit rating for completed order
+const submitRating = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { customer_id, order_id, rating } = req.body;
 
-    const result = await query(
-      'DELETE FROM users WHERE user_id = $1 AND role = $2 RETURNING user_id',
-      [id, 'customer']
-    );
-
-    if (result.rowCount === 0) {
-      return sendError(res, 404, 'Customer not found');
+    if (!customer_id || !order_id || !rating) {
+      return sendError(res, 400, 'Missing required fields');
     }
 
-    return sendSuccess(res, 200, 'Customer deleted successfully');
+    if (rating < 1 || rating > 5) {
+      return sendError(res, 400, 'Rating must be between 1 and 5');
+    }
+
+    // Call submit_rating function
+    const result = await query(
+      'SELECT submit_rating($1, $2, $3) as result',
+      [customer_id, order_id, parseInt(rating)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, response.message);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
   } catch (error) {
-    console.error('Delete customer error:', error);
-    return sendError(res, 500, 'Error deleting customer', error.message);
+    console.error('Submit rating error:', error);
+    return sendError(res, 500, 'Error submitting rating', error.message);
+  }
+};
+
+// @desc    Cancel order
+const cancelOrder = async (req, res) => {
+  try {
+    const { order_id, user_id, reason } = req.body;
+
+    if (!order_id || !user_id) {
+      return sendError(res, 400, 'Missing required fields');
+    }
+
+    // Call cancel_order function
+    const result = await query(
+      'SELECT cancel_order($1, $2, $3) as result',
+      [order_id, user_id, reason || null]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, response.message);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
+  } catch (error) {
+    console.error('Cancel order error:', error);
+    return sendError(res, 500, 'Error cancelling order', error.message);
+  }
+};
+
+// @desc    View past orders
+const viewPastOrders = async (req, res) => {
+  try {
+    const { user_id } = req.params;
+
+    if (!user_id) {
+      return sendError(res, 400, 'User ID is required');
+    }
+
+    // Call view_past_orders function
+    const result = await query(
+      'SELECT view_past_orders($1) as result',
+      [parseInt(user_id)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, 'Past orders retrieved', response.orders);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
+  } catch (error) {
+    console.error('View past orders error:', error);
+    return sendError(res, 500, 'Error retrieving past orders', error.message);
+  }
+};
+
+// @desc    View past order details
+const viewPastOrderDetails = async (req, res) => {
+  try {
+    const { customer_id, order_id } = req.params;
+
+    if (!customer_id || !order_id) {
+      return sendError(res, 400, 'Missing required parameters');
+    }
+
+    // Call view_past_order_details_customer function
+    const result = await query(
+      'SELECT view_past_order_details_customer($1, $2) as result',
+      [parseInt(customer_id), parseInt(order_id)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, 'Order details retrieved', response.order);
+    } else {
+      return sendError(res, 404, response.message);
+    }
+
+  } catch (error) {
+    console.error('View past order details error:', error);
+    return sendError(res, 500, 'Error retrieving order details', error.message);
   }
 };
 
 module.exports = {
-  getAllCustomers,
-  getCustomerById,
-  updateCustomer,
-  deleteCustomer
+  startOrder,
+  acceptBid,
+  getOrderDetails,
+  submitRating,
+  cancelOrder,
+  viewPastOrders,
+  viewPastOrderDetails
 };

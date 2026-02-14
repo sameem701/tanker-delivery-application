@@ -1,103 +1,275 @@
 const { query } = require('../config/database');
 const { sendSuccess, sendError } = require('../utils/responseHelper');
 
-// @desc    Get all drivers
-const getAllDrivers = async (req, res) => {
+// @desc    Confirm order assignment
+const confirmOrder = async (req, res) => {
   try {
+    const { driver_id, order_id } = req.body;
+
+    if (!driver_id || !order_id) {
+      return sendError(res, 400, 'Missing required fields');
+    }
+
+    // Call confirm_order_driver function
     const result = await query(
-      `SELECT u.user_id, u.name, u.phone, u.verified, 
-              sd.driver_phone_num, sd.supplier_user_id, sd.available, sd.joined_at
-       FROM users u
-       LEFT JOIN supplier_drivers sd ON u.user_id = sd.driver_user_id
-       WHERE u.role = 'driver'
-       ORDER BY u.created_at DESC`
+      'SELECT confirm_order_driver($1, $2) as result',
+      [driver_id, order_id]
     );
 
-    return sendSuccess(res, 200, 'Drivers retrieved successfully', result.rows);
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, response.message);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
   } catch (error) {
-    console.error('Get all drivers error:', error);
-    return sendError(res, 500, 'Error retrieving drivers', error.message);
+    console.error('Confirm order error:', error);
+    return sendError(res, 500, 'Error confirming order', error.message);
   }
 };
 
-// @desc    Get driver by ID
-const getDriverById = async (req, res) => {
+// @desc    Reject order assignment
+const rejectOrder = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { driver_id, order_id } = req.body;
 
-    const result = await query(
-      `SELECT u.user_id, u.name, u.phone, u.verified, u.created_at,
-              sd.driver_phone_num, sd.supplier_user_id, sd.available, sd.joined_at
-       FROM users u
-       LEFT JOIN supplier_drivers sd ON u.user_id = sd.driver_user_id
-       WHERE u.user_id = $1 AND u.role = 'driver'`,
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      return sendError(res, 404, 'Driver not found');
+    if (!driver_id || !order_id) {
+      return sendError(res, 400, 'Missing required fields');
     }
 
-    return sendSuccess(res, 200, 'Driver retrieved successfully', result.rows[0]);
+    // Call reject_order_driver function
+    const result = await query(
+      'SELECT reject_order_driver($1, $2) as result',
+      [driver_id, order_id]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, response.message);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
   } catch (error) {
-    console.error('Get driver by ID error:', error);
-    return sendError(res, 500, 'Error retrieving driver', error.message);
+    console.error('Reject order error:', error);
+    return sendError(res, 500, 'Error rejecting order', error.message);
   }
 };
 
-// @desc    Update driver
-const updateDriver = async (req, res) => {
+// @desc    Get order details for driver
+const getOrderDetails = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { name } = req.body;
+    const { driver_id, order_id } = req.params;
 
-    if (name) {
-      const result = await query(
-        'UPDATE users SET name = $1 WHERE user_id = $2 AND role = $3 RETURNING user_id',
-        [name, id, 'driver']
-      );
-
-      if (result.rowCount === 0) {
-        return sendError(res, 404, 'Driver not found');
-      }
+    if (!driver_id || !order_id) {
+      return sendError(res, 400, 'Missing required parameters');
     }
 
-    return sendSuccess(res, 200, 'Driver updated successfully');
+    // Call get_order_details_driver function
+    const result = await query(
+      'SELECT get_order_details_driver($1, $2) as result',
+      [parseInt(driver_id), parseInt(order_id)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, 'Order details retrieved', response);
+    } else {
+      return sendError(res, 404, response.message);
+    }
+
   } catch (error) {
-    console.error('Update driver error:', error);
-    return sendError(res, 500, 'Error updating driver', error.message);
+    console.error('Get order details error:', error);
+    return sendError(res, 500, 'Error retrieving order details', error.message);
   }
 };
 
-// @desc    Update driver status (available/unavailable)
-const updateDriverStatus = async (req, res) => {
+// @desc    Start ride
+const startRide = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { available } = req.body;
+    const { driver_id, order_id } = req.body;
 
-    if (typeof available !== 'boolean') {
-      return sendError(res, 400, 'Available status must be a boolean');
+    if (!driver_id || !order_id) {
+      return sendError(res, 400, 'Missing required fields');
     }
 
+    // Call start_ride function
     const result = await query(
-      'UPDATE supplier_drivers SET available = $1 WHERE driver_user_id = $2 RETURNING driver_user_id',
-      [available, id]
+      'SELECT start_ride($1, $2) as result',
+      [driver_id, order_id]
     );
 
-    if (result.rowCount === 0) {
-      return sendError(res, 404, 'Driver not found in supplier_drivers');
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, response.message);
+    } else {
+      return sendError(res, 400, response.message);
     }
 
-    return sendSuccess(res, 200, 'Driver status updated successfully');
   } catch (error) {
-    console.error('Update driver status error:', error);
-    return sendError(res, 500, 'Error updating driver status', error.message);
+    console.error('Start ride error:', error);
+    return sendError(res, 500, 'Error starting ride', error.message);
+  }
+};
+
+// @desc    Mark order as reached
+const markReached = async (req, res) => {
+  try {
+    const { driver_id, order_id } = req.body;
+
+    if (!driver_id || !order_id) {
+      return sendError(res, 400, 'Missing required fields');
+    }
+
+    // Call mark_order_reached function
+    const result = await query(
+      'SELECT mark_order_reached($1, $2) as result',
+      [driver_id, order_id]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, response.message);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
+  } catch (error) {
+    console.error('Mark reached error:', error);
+    return sendError(res, 500, 'Error marking as reached', error.message);
+  }
+};
+
+// @desc    Finish order/delivery
+const finishOrder = async (req, res) => {
+  try {
+    const { driver_id, order_id } = req.body;
+
+    if (!driver_id || !order_id) {
+      return sendError(res, 400, 'Missing required fields');
+    }
+
+    // Call finish_order function
+    const result = await query(
+      'SELECT finish_order($1, $2) as result',
+      [driver_id, order_id]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, response.message);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
+  } catch (error) {
+    console.error('Finish order error:', error);
+    return sendError(res, 500, 'Error finishing order', error.message);
+  }
+};
+
+// @desc    Cancel order
+const cancelOrder = async (req, res) => {
+  try {
+    const { order_id, user_id, reason } = req.body;
+
+    if (!order_id || !user_id) {
+      return sendError(res, 400, 'Missing required fields');
+    }
+
+    // Call cancel_order function
+    const result = await query(
+      'SELECT cancel_order($1, $2, $3) as result',
+      [order_id, user_id, reason || null]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, response.message);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
+  } catch (error) {
+    console.error('Cancel order error:', error);
+    return sendError(res, 500, 'Error cancelling order', error.message);
+  }
+};
+
+// @desc    View past orders
+const viewPastOrders = async (req, res) => {
+  try {
+    const { user_id } = req.params;
+
+    if (!user_id) {
+      return sendError(res, 400, 'User ID is required');
+    }
+
+    // Call view_past_orders function
+    const result = await query(
+      'SELECT view_past_orders($1) as result',
+      [parseInt(user_id)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, 'Past orders retrieved', response.orders);
+    } else {
+      return sendError(res, 400, response.message);
+    }
+
+  } catch (error) {
+    console.error('View past orders error:', error);
+    return sendError(res, 500, 'Error retrieving past orders', error.message);
+  }
+};
+
+// @desc    View past order details
+const viewPastOrderDetails = async (req, res) => {
+  try {
+    const { driver_id, order_id } = req.params;
+
+    if (!driver_id || !order_id) {
+      return sendError(res, 400, 'Missing required parameters');
+    }
+
+    // Call view_past_order_details_driver function
+    const result = await query(
+      'SELECT view_past_order_details_driver($1, $2) as result',
+      [parseInt(driver_id), parseInt(order_id)]
+    );
+
+    const response = result.rows[0].result;
+
+    if (response.code === 1) {
+      return sendSuccess(res, 200, 'Order details retrieved', response.order);
+    } else {
+      return sendError(res, 404, response.message);
+    }
+
+  } catch (error) {
+    console.error('View past order details error:', error);
+    return sendError(res, 500, 'Error retrieving order details', error.message);
   }
 };
 
 module.exports = {
-  getAllDrivers,
-  getDriverById,
-  updateDriver,
-  updateDriverStatus
+  confirmOrder,
+  rejectOrder,
+  getOrderDetails,
+  startRide,
+  markReached,
+  finishOrder,
+  cancelOrder,
+  viewPastOrders,
+  viewPastOrderDetails
 };
