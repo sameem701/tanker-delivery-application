@@ -4,12 +4,16 @@ Connects to Supabase PostgreSQL and executes SQL schema files
 """
 
 import os
-import psycopg2
-from dotenv import load_dotenv
 from pathlib import Path
+from dotenv import load_dotenv
+import psycopg2
 
-# Load environment variables from .env file
-load_dotenv()
+# Go up one level to backend folder, then into .env
+backend_dir = Path(__file__).parent.parent / "backend"
+env_path = backend_dir / ".env"
+
+# Load the .env file from backend folder
+load_dotenv(dotenv_path=env_path)
 
 
 def get_db_connection():
@@ -54,8 +58,7 @@ def main():
         conn = get_db_connection()
 
         # Path to SQL files directory
-        project_root = Path(__file__).parent.parent
-        sql_dir = project_root / "code"
+        sql_dir = Path(__file__).parent
 
         # Execute SQL files in specific order
         # Order matters: schema first, then role-specific functions
