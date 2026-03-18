@@ -37,11 +37,11 @@ BEGIN
         );
     END IF;
     
-    -- Check if role is already set to 'driver'
-    IF v_current_role = 'driver' THEN
+    -- Strict role lock: details can only be submitted once when role is undefined
+    IF v_current_role != 'undefined' THEN
         RETURN json_build_object(
             'code', 0,
-            'message', 'Driver details already exist'
+            'message', 'Role already assigned. Details update is not allowed.'
         );
     END IF;
     
@@ -53,9 +53,18 @@ BEGIN
     ) INTO v_supplier_driver_exists;
     
     IF NOT v_supplier_driver_exists THEN
+        -- Not enlisted anymore: remove driver account and force full re-onboarding
+        DELETE FROM sessions
+        WHERE user_id = p_driver_id;
+
+        DELETE FROM users
+        WHERE user_id = p_driver_id;
+
         RETURN json_build_object(
             'code', 0,
-            'message', 'You are not enlisted as a driver by any supplier'
+            'message', 'You are not enlisted as a driver by any supplier. Please re-register when enlisted.',
+            'force_reonboard', true,
+            'next_screen', 'enter_number'
         );
     END IF;
     
@@ -585,6 +594,12 @@ RETURNS JSON AS $$
 DECLARE
     v_order_record RECORD;
     v_yard_location TEXT;
+    v_customer_name TEXT;
+    v_customer_phone VARCHAR(20);
+    v_supplier_name TEXT;
+    v_supplier_phone VARCHAR(20);
+    v_driver_name TEXT;
+    v_driver_phone VARCHAR(20);
 BEGIN
     -- Validate inputs
     IF p_driver_id IS NULL THEN
@@ -633,13 +648,29 @@ BEGIN
     SELECT yard_location INTO v_yard_location
     FROM suppliers
     WHERE user_id = v_order_record.supplier_id;
+
+    -- Snapshot names/phones for immutable history
+    SELECT name, phone INTO v_customer_name, v_customer_phone
+    FROM users
+    WHERE user_id = v_order_record.customer_id;
+
+    SELECT name, phone INTO v_supplier_name, v_supplier_phone
+    FROM users
+    WHERE user_id = v_order_record.supplier_id;
+
+    SELECT name, phone INTO v_driver_name, v_driver_phone
+    FROM users
+    WHERE user_id = v_order_record.driver_id;
     
     -- Insert into order_history
     INSERT INTO order_history (
-        customer_id,
         order_id,
-        supplier_id,
-        driver_id,
+        customer_name,
+        customer_phone,
+        supplier_name,
+        supplier_phone,
+        driver_name,
+        driver_phone,
         customer_location,
         yard_location,
         price,
@@ -648,10 +679,13 @@ BEGIN
         order_date,
         reason
     ) VALUES (
-        v_order_record.customer_id,
         v_order_record.order_id,
-        v_order_record.supplier_id,
-        v_order_record.driver_id,
+        COALESCE(v_customer_name, ''),
+        COALESCE(v_customer_phone, ''),
+        v_supplier_name,
+        v_supplier_phone,
+        v_driver_name,
+        v_driver_phone,
         v_order_record.delivery_location,
         COALESCE(v_yard_location, ''),
         v_order_record.accepted_price,
@@ -702,6 +736,7 @@ CREATE OR REPLACE FUNCTION view_past_order_details_driver(
 RETURNS JSON AS $$
 DECLARE
     v_order_record RECORD;
+    v_driver_phone VARCHAR(20);
 BEGIN
     -- Validate inputs
     IF p_driver_id IS NULL THEN
@@ -718,10 +753,14 @@ BEGIN
         );
     END IF;
     
+    SELECT phone INTO v_driver_phone
+    FROM users
+    WHERE user_id = p_driver_id;
+
     -- Get order from order_history
     SELECT * INTO v_order_record
     FROM order_history
-    WHERE order_id = p_order_id AND driver_id = p_driver_id;
+    WHERE order_id = p_order_id AND driver_phone = v_driver_phone;
     
     IF NOT FOUND THEN
         RETURN json_build_object(

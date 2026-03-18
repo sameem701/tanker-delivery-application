@@ -1,20 +1,4 @@
 -- ============================================================================
--- DROP EXISTING TABLES (in reverse dependency order)
--- ============================================================================
-DROP TABLE IF EXISTS sessions CASCADE;
-DROP TABLE IF EXISTS order_history CASCADE;
-DROP TABLE IF EXISTS bids CASCADE;
-DROP TABLE IF EXISTS driver_assignment CASCADE;
-DROP TABLE IF EXISTS orders CASCADE;
-DROP TABLE IF EXISTS quantity_pricing CASCADE;
-DROP TABLE IF EXISTS supplier_drivers CASCADE;
-DROP TABLE IF EXISTS suppliers CASCADE;
-DROP TABLE IF EXISTS pending_users CASCADE;
-DROP TABLE IF EXISTS customer_address CASCADE;
-DROP TABLE IF EXISTS users CASCADE;
-
-
--- ============================================================================
 -- CREATE TABLES
 -- ============================================================================
 
@@ -45,8 +29,6 @@ CREATE TABLE IF NOT EXISTS SUPPLIERS (
     USER_ID INTEGER PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
     YARD_LOCATION TEXT NOT NULL,
     BUSINESS_CONTACT VARCHAR(20) NOT NULL,
-    CNIC_FRONT_PATH TEXT NOT NULL,
-    CNIC_BACK_PATH  TEXT NOT NULL,
     RATING DECIMAL(3,2) DEFAULT 0.00,
     TOTAL_ORDERS INTEGER DEFAULT 0,
     CREATED_AT TIMESTAMP NOT NULL
@@ -123,17 +105,21 @@ CREATE TABLE IF NOT EXISTS BIDS (
 
 CREATE TABLE IF NOT EXISTS ORDER_HISTORY (
     HISTORY_ID SERIAL PRIMARY KEY,
-    ORDER_ID INTEGER NOT NULL REFERENCES ORDERS(ORDER_ID) ON DELETE CASCADE,
-    CUSTOMER_ID INTEGER NOT NULL REFERENCES USERS(USER_ID) ON DELETE SET NULL,
-    SUPPLIER_ID INTEGER REFERENCES SUPPLIERS(USER_ID) ON DELETE SET NULL,
-    DRIVER_ID INTEGER REFERENCES USERS(USER_ID) ON DELETE SET NULL,
+    ORDER_ID INTEGER NOT NULL,
+    CUSTOMER_NAME TEXT NOT NULL,
+    CUSTOMER_PHONE VARCHAR(20) NOT NULL,
+    SUPPLIER_NAME TEXT,
+    SUPPLIER_PHONE VARCHAR(20),
+    DRIVER_NAME TEXT,
+    DRIVER_PHONE VARCHAR(20),
     CUSTOMER_LOCATION TEXT NOT NULL,
     YARD_LOCATION TEXT NOT NULL,
     PRICE INTEGER NOT NULL CHECK (PRICE >= 0),
     QUANTITY INTEGER NOT NULL CHECK (QUANTITY > 0),
     STATUS VARCHAR(20) NOT NULL CHECK (STATUS IN ('completed', 'cancelled')),
     ORDER_DATE TIMESTAMP NOT NULL,
-    REASON TEXT
+    REASON TEXT,
+    CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 
@@ -494,6 +480,12 @@ RETURNS JSON AS $$
 DECLARE
     v_order_record RECORD;
     v_yard_location TEXT;
+    v_customer_name TEXT;
+    v_customer_phone VARCHAR(20);
+    v_supplier_name TEXT;
+    v_supplier_phone VARCHAR(20);
+    v_driver_name TEXT;
+    v_driver_phone VARCHAR(20);
 BEGIN
     -- Validate inputs
     IF p_order_id IS NULL OR p_user_id IS NULL THEN
@@ -525,6 +517,23 @@ BEGIN
     
     -- If status is NOT 'open' or 'supplier_timer', insert into order_history
     IF v_order_record.status NOT IN ('open', 'supplier_timer') THEN
+        -- Snapshot user names and phones for immutable history
+        SELECT name, phone INTO v_customer_name, v_customer_phone
+        FROM users
+        WHERE user_id = v_order_record.customer_id;
+
+        IF v_order_record.supplier_id IS NOT NULL THEN
+            SELECT name, phone INTO v_supplier_name, v_supplier_phone
+            FROM users
+            WHERE user_id = v_order_record.supplier_id;
+        END IF;
+
+        IF v_order_record.driver_id IS NOT NULL THEN
+            SELECT name, phone INTO v_driver_name, v_driver_phone
+            FROM users
+            WHERE user_id = v_order_record.driver_id;
+        END IF;
+
         -- Get supplier yard location
         SELECT yard_location INTO v_yard_location
         FROM suppliers
@@ -532,10 +541,13 @@ BEGIN
         
         -- Insert into order_history
         INSERT INTO order_history (
-            customer_id,
             order_id,
-            supplier_id,
-            driver_id,
+            customer_name,
+            customer_phone,
+            supplier_name,
+            supplier_phone,
+            driver_name,
+            driver_phone,
             customer_location,
             yard_location,
             price,
@@ -545,10 +557,13 @@ BEGIN
             reason,
             created_at
         ) VALUES (
-            v_order_record.customer_id,
             v_order_record.order_id,
-            v_order_record.supplier_id,
-            v_order_record.driver_id,
+            COALESCE(v_customer_name, ''),
+            COALESCE(v_customer_phone, ''),
+            v_supplier_name,
+            v_supplier_phone,
+            v_driver_name,
+            v_driver_phone,
             v_order_record.delivery_location,
             COALESCE(v_yard_location, ''),
             0,
@@ -615,6 +630,7 @@ CREATE OR REPLACE FUNCTION view_past_orders(
 RETURNS JSON AS $$
 DECLARE
     v_user_role VARCHAR(20);
+    v_user_phone VARCHAR(20);
     v_orders JSON;
 BEGIN
     -- Validate input
@@ -636,6 +652,10 @@ BEGIN
             'message', 'User not found'
         );
     END IF;
+
+    SELECT phone INTO v_user_phone
+    FROM users
+    WHERE user_id = p_user_id;
     
     -- Query order_history based on user role
     IF v_user_role = 'customer' THEN
@@ -645,11 +665,14 @@ BEGIN
                 'price', price,
                 'quantity', quantity,
                 'status', status,
-                'order_date', order_date
+                'order_date', order_date,
+                'customer_name', customer_name,
+                'supplier_name', supplier_name,
+                'driver_name', driver_name
             ) ORDER BY order_date DESC
         ) INTO v_orders
         FROM order_history
-        WHERE customer_id = p_user_id;
+        WHERE customer_phone = v_user_phone;
         
     ELSIF v_user_role = 'supplier' THEN
         SELECT json_agg(
@@ -658,11 +681,14 @@ BEGIN
                 'price', price,
                 'quantity', quantity,
                 'status', status,
-                'order_date', order_date
+                'order_date', order_date,
+                'customer_name', customer_name,
+                'supplier_name', supplier_name,
+                'driver_name', driver_name
             ) ORDER BY order_date DESC
         ) INTO v_orders
         FROM order_history
-        WHERE supplier_id = p_user_id;
+        WHERE supplier_phone = v_user_phone;
         
     ELSIF v_user_role = 'driver' THEN
         SELECT json_agg(
@@ -671,11 +697,14 @@ BEGIN
                 'price', price,
                 'quantity', quantity,
                 'status', status,
-                'order_date', order_date
+                'order_date', order_date,
+                'customer_name', customer_name,
+                'supplier_name', supplier_name,
+                'driver_name', driver_name
             ) ORDER BY order_date DESC
         ) INTO v_orders
         FROM order_history
-        WHERE driver_id = p_user_id;
+        WHERE driver_phone = v_user_phone;
         
     ELSE
         RETURN json_build_object(

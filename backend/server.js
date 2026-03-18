@@ -19,6 +19,9 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/api/app', require('./routes/startupRoutes'));
+app.use('/api/customer', require('./routes/customerRoutes'));
+app.use('/api/driver', require('./routes/driverRoutes'));
+app.use('/api/supplier', require('./routes/supplierRoutes'));
 
 app.use((req, res) => {
   res.status(404).json({

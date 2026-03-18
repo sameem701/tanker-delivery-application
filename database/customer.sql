@@ -23,7 +23,7 @@ BEGIN
         );
     END IF;
     
-    -- Check if user already has customer role
+    -- Strict role lock: details can only be submitted once when role is undefined
     SELECT role INTO v_current_role
     FROM users
     WHERE user_id = p_user_id;
@@ -35,10 +35,10 @@ BEGIN
         );
     END IF;
     
-    IF v_current_role = 'customer' THEN
+    IF v_current_role != 'undefined' THEN
         RETURN json_build_object(
             'code', 0,
-            'message', 'Customer already exists'
+            'message', 'Role already assigned. Details update is not allowed.'
         );
     END IF;
     
@@ -536,8 +536,7 @@ CREATE OR REPLACE FUNCTION view_past_order_details_customer(
 RETURNS JSON AS $$
 DECLARE
     v_order_record RECORD;
-    v_supplier_name TEXT;
-    v_driver_name TEXT;
+    v_customer_phone VARCHAR(20);
 BEGIN
     -- Validate inputs
     IF p_customer_id IS NULL THEN
@@ -554,28 +553,20 @@ BEGIN
         );
     END IF;
     
+    SELECT phone INTO v_customer_phone
+    FROM users
+    WHERE user_id = p_customer_id;
+
     -- Get order from order_history
     SELECT * INTO v_order_record
     FROM order_history
-    WHERE order_id = p_order_id AND customer_id = p_customer_id;
+    WHERE order_id = p_order_id AND customer_phone = v_customer_phone;
     
     IF NOT FOUND THEN
         RETURN json_build_object(
             'code', 0,
             'message', 'Order not found in your history'
         );
-    END IF;
-    
-    -- Get supplier name
-    SELECT name INTO v_supplier_name
-    FROM users
-    WHERE user_id = v_order_record.supplier_id;
-    
-    -- Get driver name (may be NULL if no driver was assigned)
-    IF v_order_record.driver_id IS NOT NULL THEN
-        SELECT name INTO v_driver_name
-        FROM users
-        WHERE user_id = v_order_record.driver_id;
     END IF;
     
     -- Return order details
@@ -586,8 +577,8 @@ BEGIN
             'quantity', v_order_record.quantity,
             'price', v_order_record.price,
             'status', v_order_record.status,
-            'driver_name', v_driver_name,
-            'supplier_name', v_supplier_name,
+            'driver_name', v_order_record.driver_name,
+            'supplier_name', v_order_record.supplier_name,
             'customer_location', v_order_record.customer_location,
             'yard_location', v_order_record.yard_location
         )

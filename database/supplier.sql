@@ -1,5 +1,5 @@
 -- Purpose: Enter supplier details (name, yard location, business contact)
---          Role will be set later after CNIC upload
+--          Sets role to supplier immediately
 -- Parameters:
 --   p_user_id: User ID
 --   p_name: Supplier name
@@ -26,7 +26,7 @@ BEGIN
         );
     END IF;
     
-    -- Check if user already has supplier role
+    -- Strict role lock: details can only be submitted once when role is undefined
     SELECT role INTO v_current_role
     FROM users
     WHERE user_id = p_user_id;
@@ -38,16 +38,17 @@ BEGIN
         );
     END IF;
     
-    IF v_current_role = 'supplier' THEN
+    IF v_current_role != 'undefined' THEN
         RETURN json_build_object(
             'code', 0,
-            'message', 'Supplier already exists'
+            'message', 'Role already assigned. Details update is not allowed.'
         );
     END IF;
     
-    -- Update user name (DO NOT set role yet)
+    -- Update user name and set supplier role immediately
     UPDATE users
-    SET name = TRIM(p_name)
+    SET name = TRIM(p_name),
+        role = 'supplier'
     WHERE user_id = p_user_id;
     
     -- Check if supplier record already exists
@@ -60,9 +61,9 @@ BEGIN
             BUSINESS_CONTACT = TRIM(p_business_contact)
         WHERE USER_ID = p_user_id;
     ELSE
-        -- Insert new supplier record (CNIC paths will be set later)
-        INSERT INTO SUPPLIERS (USER_ID, YARD_LOCATION, BUSINESS_CONTACT, CNIC_FRONT_PATH, CNIC_BACK_PATH, CREATED_AT)
-        VALUES (p_user_id, TRIM(p_yard_location), TRIM(p_business_contact), '', '', CURRENT_TIMESTAMP);
+        -- Insert new supplier record
+        INSERT INTO SUPPLIERS (USER_ID, YARD_LOCATION, BUSINESS_CONTACT, CREATED_AT)
+        VALUES (p_user_id, TRIM(p_yard_location), TRIM(p_business_contact), CURRENT_TIMESTAMP);
     END IF;
     
     RETURN json_build_object(
@@ -80,105 +81,7 @@ EXCEPTION
 END;
 $$ LANGUAGE plpgsql;
 
-
--- Purpose: Upload CNIC images for supplier
---          Updates CNIC paths in SUPPLIERS table and sets role to 'supplier'
--- Parameters:
---   p_user_id: User ID (supplier)
---   p_cnic_front_path: URL/path to CNIC front image
---   p_cnic_back_path: URL/path to CNIC back image
--- Returns: JSON object with success status
--- Code: 1=Success, 0=Failure/Already exists
-CREATE OR REPLACE FUNCTION upload_cnic_supplier(
-    p_user_id INTEGER,
-    p_cnic_front_path TEXT,
-    p_cnic_back_path TEXT
-)
-RETURNS JSON AS $$
-DECLARE
-    v_current_role VARCHAR(20);
-    v_supplier_exists BOOLEAN;
-BEGIN
-    -- Validate user_id
-    IF p_user_id IS NULL THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'User ID cannot be null'
-        );
-    END IF;
-    
-    
-    
-    -- Check if user already has supplier role
-    SELECT role INTO v_current_role
-    FROM users
-    WHERE user_id = p_user_id;
-    
-    IF NOT FOUND THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'User not found'
-        );
-    END IF;
-    
-    IF v_current_role = 'supplier' THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Supplier already exists'
-        );
-    END IF;
-    
-    
-    
-    -- Validate CNIC paths
-    IF p_cnic_front_path IS NULL OR TRIM(p_cnic_front_path) = '' THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'CNIC front path cannot be empty'
-        );
-    END IF;
-    
-    IF p_cnic_back_path IS NULL OR TRIM(p_cnic_back_path) = '' THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'CNIC back path cannot be empty'
-        );
-    END IF;
-    
-    -- Check if supplier record exists
-    SELECT EXISTS(SELECT 1 FROM SUPPLIERS WHERE USER_ID = p_user_id) INTO v_supplier_exists;
-    
-    IF NOT v_supplier_exists THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Supplier details not found. Please complete supplier details first.'
-        );
-    END IF;
-    
-    -- Update CNIC paths in SUPPLIERS table
-    UPDATE SUPPLIERS
-    SET CNIC_FRONT_PATH = TRIM(p_cnic_front_path),
-        CNIC_BACK_PATH = TRIM(p_cnic_back_path)
-    WHERE USER_ID = p_user_id;
-    
-    -- Finally, set role to 'supplier' in users table
-    UPDATE users
-    SET role = 'supplier'
-    WHERE user_id = p_user_id;
-    
-    RETURN json_build_object(
-        'code', 1,
-        'message', 'CNIC uploaded successfully. Supplier registration complete.'
-    );
-    
-EXCEPTION
-    WHEN OTHERS THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Failed to upload CNIC: ' || SQLERRM
-        );
-END;
-$$ LANGUAGE plpgsql;
+DROP FUNCTION IF EXISTS upload_cnic_supplier(INTEGER, TEXT, TEXT);
 
 
 
@@ -289,6 +192,226 @@ EXCEPTION
         RETURN json_build_object(
             'code', 0,
             'message', 'Failed to check drivers: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Add driver phone for supplier
+-- ============================================================================
+-- Purpose: Supplier adds a driver phone to their roster
+-- Parameters:
+--   p_supplier_id: Supplier user_id
+--   p_driver_phone_num: Driver phone number
+-- Returns: JSON object with status
+-- ============================================================================
+CREATE OR REPLACE FUNCTION add_driver_phone_for_supplier(
+    p_supplier_id INTEGER,
+    p_driver_phone_num VARCHAR(20)
+)
+RETURNS JSON AS $$
+DECLARE
+    v_supplier_role VARCHAR(20);
+    v_row_exists_same_supplier BOOLEAN;
+    v_row_exists_other_supplier BOOLEAN;
+BEGIN
+    IF p_supplier_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier ID cannot be null'
+        );
+    END IF;
+
+    IF p_driver_phone_num IS NULL OR TRIM(p_driver_phone_num) = '' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver phone number cannot be empty'
+        );
+    END IF;
+
+    SELECT role INTO v_supplier_role
+    FROM users
+    WHERE user_id = p_supplier_id;
+
+    IF NOT FOUND OR v_supplier_role != 'supplier' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Only suppliers can add drivers'
+        );
+    END IF;
+
+    SELECT EXISTS(
+        SELECT 1
+        FROM supplier_drivers
+        WHERE supplier_user_id = p_supplier_id
+          AND driver_phone_num = TRIM(p_driver_phone_num)
+    ) INTO v_row_exists_same_supplier;
+
+    IF v_row_exists_same_supplier THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver phone already added to your list'
+        );
+    END IF;
+
+    SELECT EXISTS(
+        SELECT 1
+        FROM supplier_drivers
+        WHERE driver_phone_num = TRIM(p_driver_phone_num)
+          AND supplier_user_id != p_supplier_id
+    ) INTO v_row_exists_other_supplier;
+
+    IF v_row_exists_other_supplier THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver phone is already linked with another supplier'
+        );
+    END IF;
+
+    INSERT INTO supplier_drivers (
+        driver_phone_num,
+        supplier_user_id,
+        driver_user_id,
+        available,
+        joined_at
+    ) VALUES (
+        TRIM(p_driver_phone_num),
+        p_supplier_id,
+        NULL,
+        TRUE,
+        NULL
+    );
+
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Driver phone added successfully'
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to add driver phone: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Remove driver for supplier
+-- ============================================================================
+-- Purpose: Supplier removes a driver from their roster
+-- Behavior:
+--   - If not linked (driver_user_id IS NULL): delete supplier_drivers row only
+--   - If linked: ensure no active orders; then clean driver data from all relevant
+--     tables while preserving order_history rows
+-- Parameters:
+--   p_supplier_id: Supplier user_id
+--   p_driver_phone_num: Driver phone number
+-- Returns: JSON object with status
+-- ============================================================================
+CREATE OR REPLACE FUNCTION remove_driver_for_supplier(
+    p_supplier_id INTEGER,
+    p_driver_phone_num VARCHAR(20)
+)
+RETURNS JSON AS $$
+DECLARE
+    v_supplier_role VARCHAR(20);
+    v_driver_user_id INTEGER;
+    v_active_order_exists BOOLEAN;
+BEGIN
+    IF p_supplier_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier ID cannot be null'
+        );
+    END IF;
+
+    IF p_driver_phone_num IS NULL OR TRIM(p_driver_phone_num) = '' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver phone number cannot be empty'
+        );
+    END IF;
+
+    SELECT role INTO v_supplier_role
+    FROM users
+    WHERE user_id = p_supplier_id;
+
+    IF NOT FOUND OR v_supplier_role != 'supplier' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Only suppliers can remove drivers'
+        );
+    END IF;
+
+    -- Ownership/link check: driver row must belong to this supplier
+    SELECT driver_user_id INTO v_driver_user_id
+    FROM supplier_drivers
+    WHERE supplier_user_id = p_supplier_id
+      AND driver_phone_num = TRIM(p_driver_phone_num);
+
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver does not belong to this supplier'
+        );
+    END IF;
+
+    -- If not linked yet, delete supplier row only
+    IF v_driver_user_id IS NULL THEN
+        DELETE FROM supplier_drivers
+        WHERE supplier_user_id = p_supplier_id
+          AND driver_phone_num = TRIM(p_driver_phone_num);
+
+        RETURN json_build_object(
+            'code', 1,
+            'message', 'Unlinked driver phone removed successfully'
+        );
+    END IF;
+
+    -- Guard: driver must not appear in orders table at all
+    SELECT EXISTS(
+        SELECT 1
+        FROM orders
+        WHERE driver_id = v_driver_user_id
+    ) INTO v_active_order_exists;
+
+    IF v_active_order_exists THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver exists in orders and cannot be removed'
+        );
+    END IF;
+
+    -- Remove any outstanding assignment rows for this driver.
+    DELETE FROM driver_assignment
+    WHERE driver_id = v_driver_user_id;
+
+    -- Delete session tokens for this driver.
+    DELETE FROM sessions
+    WHERE user_id = v_driver_user_id;
+
+    -- Remove supplier mapping row.
+    DELETE FROM supplier_drivers
+    WHERE supplier_user_id = p_supplier_id
+      AND driver_phone_num = TRIM(p_driver_phone_num);
+
+    -- Delete driver user record after references are cleaned.
+    DELETE FROM users
+    WHERE user_id = v_driver_user_id;
+
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Linked driver removed and data cleaned successfully'
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to remove driver: ' || SQLERRM
         );
 END;
 $$ LANGUAGE plpgsql;
@@ -940,7 +1063,7 @@ CREATE OR REPLACE FUNCTION view_past_order_details_supplier(
 RETURNS JSON AS $$
 DECLARE
     v_order_record RECORD;
-    v_driver_name TEXT;
+    v_supplier_phone VARCHAR(20);
 BEGIN
     -- Validate inputs
     IF p_supplier_id IS NULL THEN
@@ -957,23 +1080,20 @@ BEGIN
         );
     END IF;
     
+    SELECT phone INTO v_supplier_phone
+    FROM users
+    WHERE user_id = p_supplier_id;
+
     -- Get order from order_history
     SELECT * INTO v_order_record
     FROM order_history
-    WHERE order_id = p_order_id AND supplier_id = p_supplier_id;
+    WHERE order_id = p_order_id AND supplier_phone = v_supplier_phone;
     
     IF NOT FOUND THEN
         RETURN json_build_object(
             'code', 0,
             'message', 'Order not found in your history'
         );
-    END IF;
-    
-    -- Get driver name (may be NULL if no driver was assigned)
-    IF v_order_record.driver_id IS NOT NULL THEN
-        SELECT name INTO v_driver_name
-        FROM users
-        WHERE user_id = v_order_record.driver_id;
     END IF;
     
     -- Return order details
@@ -984,7 +1104,7 @@ BEGIN
             'price', v_order_record.price,
             'quantity', v_order_record.quantity,
             'customer_location', v_order_record.customer_location,
-            'driver_name', v_driver_name,
+            'driver_name', v_order_record.driver_name,
             'status', v_order_record.status
         )
     );

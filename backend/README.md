@@ -153,13 +153,12 @@ Authorization: Bearer <your_jwt_token>
 
 ### Next Steps
 
-1. Add file upload functionality for CNIC images (suppliers)
-2. Implement OTP verification system
-3. Add WebSocket support for real-time updates
-4. Add request rate limiting
-5. Implement comprehensive logging system
-6. Add API documentation (Swagger/OpenAPI)
-7. Write unit and integration tests
+1. Implement OTP verification system
+2. Add WebSocket support for real-time updates
+3. Add request rate limiting
+4. Implement comprehensive logging system
+5. Add API documentation (Swagger/OpenAPI)
+6. Write unit and integration tests
 
 ## Error Handling
 
