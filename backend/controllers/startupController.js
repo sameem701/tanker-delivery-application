@@ -74,10 +74,10 @@ const appStartup = async (req, res) => {
 
     const user = userResult.rows[0];
 
-    // Existing valid session goes to dashboard according to requested behavior.
+    // Route by onboarding state: undefined role must complete details first.
     return res.status(200).json({
       success: true,
-      next_screen: 'dashboard',
+      next_screen: user.role === 'undefined' ? 'enter_details' : 'dashboard',
       user: {
         user_id: user.user_id,
         role: user.role,
@@ -162,7 +162,8 @@ const storeOTP = async (req, res) => {
     const dbResult = await query('SELECT store_otp($1, $2) AS result', [phone, otp]);
     const response = dbResult.rows[0].result;
 
-    if (!response || response.code === 2) {
+    // store_otp returns { success: true/false, message: ... }
+    if (!response || response.success !== true) {
       return res.status(400).json({
         success: false,
         message: response?.message || 'Failed to store OTP'
@@ -214,14 +215,15 @@ const verifyOTP = async (req, res) => {
     const dbResult = await query('SELECT verify_otp_and_activate_user($1, $2) AS result', [phone, otp]);
     const response = dbResult.rows[0].result;
 
-    if (!response || response.code === 2) {
+    // verify_otp_and_activate_user contract: 0=success, 1=invalid OTP, 2=error
+    if (!response || response.code !== 0) {
       return res.status(400).json({
         success: false,
         message: response?.message || 'OTP verification failed'
       });
     }
 
-    // Code 1: OTP verified successfully
+    // Code 0: OTP verified successfully
     return res.status(200).json({
       success: true,
       message: response.message || 'OTP verified successfully',
