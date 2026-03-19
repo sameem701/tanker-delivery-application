@@ -20,7 +20,11 @@ CREATE TABLE IF NOT EXISTS customer_address (
 CREATE TABLE IF NOT EXISTS pending_users (
     phone VARCHAR(20) PRIMARY KEY,
     otp VARCHAR(64),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    otp_attempt_count INTEGER NOT NULL DEFAULT 0,
+    otp_sent_count INTEGER NOT NULL DEFAULT 0,
+    first_otp_sent_at TIMESTAMP,
+    last_otp_sent_at TIMESTAMP
 );
 
 
@@ -281,7 +285,9 @@ CREATE OR REPLACE FUNCTION store_otp(
 )
 RETURNS JSON AS $$
 DECLARE
-    v_pending_exists BOOLEAN;
+    v_pending_record RECORD;
+    v_new_sent_count INTEGER;
+    v_window_start TIMESTAMP;
 BEGIN
     -- Validate inputs
     IF p_phone IS NULL OR TRIM(p_phone) = '' THEN
@@ -298,25 +304,58 @@ BEGIN
         );
     END IF;
     
-    -- Check if pending user exists
-    SELECT EXISTS(SELECT 1 FROM pending_users WHERE phone = p_phone) INTO v_pending_exists;
-    
-    IF NOT v_pending_exists THEN
+    -- Get pending user row
+    SELECT * INTO v_pending_record
+    FROM pending_users
+    WHERE phone = p_phone;
+
+    IF NOT FOUND THEN
         RETURN json_build_object(
             'success', false,
             'message', 'Phone number not found in pending users'
         );
     END IF;
+
+    -- Enforce 1 minute resend cooldown per phone
+    IF v_pending_record.last_otp_sent_at IS NOT NULL
+       AND CURRENT_TIMESTAMP < (v_pending_record.last_otp_sent_at + INTERVAL '1 minute') THEN
+        RETURN json_build_object(
+            'success', false,
+            'message', 'Please wait at least 1 minute before requesting a new OTP'
+        );
+    END IF;
+
+    -- Enforce max 3 OTP generations in a rolling 24-hour window
+    IF v_pending_record.first_otp_sent_at IS NULL
+       OR CURRENT_TIMESTAMP >= (v_pending_record.first_otp_sent_at + INTERVAL '24 hours') THEN
+        v_window_start := CURRENT_TIMESTAMP;
+        v_new_sent_count := 1;
+    ELSE
+        v_window_start := v_pending_record.first_otp_sent_at;
+        v_new_sent_count := v_pending_record.otp_sent_count + 1;
+    END IF;
+
+    IF v_new_sent_count > 3 THEN
+        RETURN json_build_object(
+            'success', false,
+            'message', 'OTP request limit reached for this phone in 24 hours'
+        );
+    END IF;
     
-    -- Update OTP in pending_users and set created_at
+    -- Update OTP, timestamps, and reset wrong-attempt counter for this new OTP
     UPDATE pending_users
     SET otp = p_otp,
-        created_at = CURRENT_TIMESTAMP
+        created_at = CURRENT_TIMESTAMP,
+        otp_attempt_count = 0,
+        otp_sent_count = v_new_sent_count,
+        first_otp_sent_at = v_window_start,
+        last_otp_sent_at = CURRENT_TIMESTAMP
     WHERE phone = p_phone;
     
     RETURN json_build_object(
         'success', true,
-        'message', 'OTP stored successfully'
+        'message', 'OTP stored successfully',
+        'remaining_otp_requests_in_24h', (3 - v_new_sent_count)
     );
     
 EXCEPTION
@@ -378,6 +417,7 @@ DECLARE
     v_new_user_id INTEGER;
     v_session_token VARCHAR(255);
     v_user_role VARCHAR(20);
+    v_current_attempt_count INTEGER;
 BEGIN
     -- Validate inputs
     IF p_phone IS NULL OR TRIM(p_phone) = '' THEN
@@ -405,12 +445,50 @@ BEGIN
             'message', 'Phone number not found in pending users'
         );
     END IF;
+
+    -- Enforce OTP expiry window (10 minutes)
+    IF v_pending_record.created_at IS NULL
+       OR CURRENT_TIMESTAMP > (v_pending_record.created_at + INTERVAL '10 minutes') THEN
+        RETURN json_build_object(
+            'code', 2,
+            'message', 'OTP expired. Please request a new OTP'
+        );
+    END IF;
+
+    -- Enforce max 3 wrong attempts per issued OTP
+    IF v_pending_record.otp_attempt_count >= 3 THEN
+        RETURN json_build_object(
+            'code', 2,
+            'message', 'Maximum OTP attempts reached. Please request a new OTP'
+        );
+    END IF;
     
     -- Verify OTP (plain text comparison)
     IF p_otp != v_pending_record.otp THEN
+        UPDATE pending_users
+        SET otp_attempt_count = otp_attempt_count + 1
+        WHERE phone = p_phone;
+
+        SELECT otp_attempt_count INTO v_current_attempt_count
+        FROM pending_users
+        WHERE phone = p_phone;
+
+        IF v_current_attempt_count >= 3 THEN
+            UPDATE pending_users
+            SET otp = NULL,
+                created_at = CURRENT_TIMESTAMP
+            WHERE phone = p_phone;
+
+            RETURN json_build_object(
+                'code', 2,
+                'message', 'Maximum OTP attempts reached. Please request a new OTP'
+            );
+        END IF;
+
         RETURN json_build_object(
             'code', 1,
-            'message', 'Invalid OTP'
+            'message', 'Invalid OTP',
+            'remaining_attempts', (3 - v_current_attempt_count)
         );
     END IF;
     
