@@ -30,6 +30,52 @@ const getAuthenticatedUserId = async (req) => {
   };
 };
 
+const getSupplierUserId = async (req) => {
+  const auth = await getAuthenticatedUserId(req);
+  if (!auth.ok) {
+    return auth;
+  }
+
+  const roleResult = await query('SELECT role FROM users WHERE user_id = $1', [auth.userId]);
+  const role = roleResult.rows[0]?.role;
+
+  if (role !== 'supplier') {
+    return {
+      ok: false,
+      status: 403,
+      message: 'Forbidden: supplier access required'
+    };
+  }
+
+  return {
+    ok: true,
+    userId: auth.userId
+  };
+};
+
+const getCustomerUserId = async (req) => {
+  const auth = await getAuthenticatedUserId(req);
+  if (!auth.ok) {
+    return auth;
+  }
+
+  const roleResult = await query('SELECT role FROM users WHERE user_id = $1', [auth.userId]);
+  const role = roleResult.rows[0]?.role;
+
+  if (role !== 'customer') {
+    return {
+      ok: false,
+      status: 403,
+      message: 'Forbidden: customer access required'
+    };
+  }
+
+  return {
+    ok: true,
+    userId: auth.userId
+  };
+};
+
 
 // On app Start up
 
@@ -105,6 +151,14 @@ const enterNumber = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Phone number is required'
+      });
+    }
+
+    // Validate phone number length (10-20 digits)
+    if (phone.length < 10 || phone.length > 20) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number must be between 10 and 20 characters'
       });
     }
 
@@ -385,6 +439,14 @@ const enterDetailsSupplier = async (req, res) => {
       });
     }
 
+    // Validate business_contact phone number length (10-20 digits)
+    if (businessContact.length < 10 || businessContact.length > 20) {
+      return res.status(400).json({
+        success: false,
+        message: 'Business contact must be a valid phone number (10-20 characters)'
+      });
+    }
+
     const dbResult = await query('SELECT enter_details_supplier($1, $2, $3, $4) AS result', [
       userId,
       name,
@@ -419,6 +481,335 @@ const enterDetailsSupplier = async (req, res) => {
   }
 };
 
+
+
+
+// Supplier dashboard: add a driver phone to roster.
+const addSupplierDriver = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const supplierId = auth.userId;
+    const driverPhone = (req.body.driver_phone_num || '').toString().trim();
+
+    if (!driverPhone) {
+      return res.status(400).json({
+        success: false,
+        message: 'driver_phone_num is required'
+      });
+    }
+
+    if (driverPhone.length < 10 || driverPhone.length > 20) {
+      return res.status(400).json({
+        success: false,
+        message: 'Driver phone number must be between 10 and 20 characters'
+      });
+    }
+
+    const dbResult = await query('SELECT add_driver_phone_for_supplier($1, $2) AS result', [
+      supplierId,
+      driverPhone
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to add driver'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Driver added successfully'
+    });
+  } catch (error) {
+    console.error('Add supplier driver error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to add supplier driver',
+      error: error.message
+    });
+  }
+};
+
+// Supplier dashboard: list roster drivers.
+const listSupplierDrivers = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const supplierId = auth.userId;
+
+    const dbResult = await query(
+      `
+      SELECT
+        sd.driver_phone_num,
+        sd.driver_user_id,
+        sd.available,
+        sd.joined_at,
+        u.name AS driver_name,
+        u.phone AS linked_phone
+      FROM supplier_drivers sd
+      LEFT JOIN users u ON u.user_id = sd.driver_user_id
+      WHERE sd.supplier_user_id = $1
+      ORDER BY sd.joined_at DESC NULLS LAST, sd.driver_phone_num ASC
+      `,
+      [supplierId]
+    );
+
+    const drivers = dbResult.rows.map((row) => ({
+      driver_phone_num: row.driver_phone_num,
+      driver_user_id: row.driver_user_id,
+      linked: Boolean(row.driver_user_id),
+      available: row.available,
+      joined_at: row.joined_at,
+      driver_name: row.driver_name || null,
+      linked_phone: row.linked_phone || null
+    }));
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        supplier_user_id: supplierId,
+        total_drivers: drivers.length,
+        drivers
+      }
+    });
+  } catch (error) {
+    console.error('List supplier drivers error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to list supplier drivers',
+      error: error.message
+    });
+  }
+};
+
+// Supplier dashboard: remove driver phone from roster.
+const removeSupplierDriver = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const supplierId = auth.userId;
+    const driverPhone = (req.body.driver_phone_num || '').toString().trim();
+
+    if (!driverPhone) {
+      return res.status(400).json({
+        success: false,
+        message: 'driver_phone_num is required'
+      });
+    }
+
+    const dbResult = await query('SELECT remove_driver_for_supplier($1, $2) AS result', [
+      supplierId,
+      driverPhone
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to remove driver'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Driver removed successfully'
+    });
+  } catch (error) {
+    console.error('Remove supplier driver error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to remove supplier driver',
+      error: error.message
+    });
+  }
+};
+
+// Supplier dashboard: readiness checks for order screen.
+const getSupplierDriverReadiness = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const supplierId = auth.userId;
+
+    const [hasAnyResult, hasActiveResult] = await Promise.all([
+      query('SELECT check_supplier_has_drivers($1) AS result', [supplierId]),
+      query('SELECT check_supplier_has_active_drivers($1) AS result', [supplierId])
+    ]);
+
+    const hasAny = hasAnyResult.rows[0].result;
+    const hasActive = hasActiveResult.rows[0].result;
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        has_defined_drivers: hasAny?.code === 1,
+        has_active_drivers: hasActive?.code === 1,
+        has_defined_drivers_message: hasAny?.message || null,
+        has_active_drivers_message: hasActive?.message || null
+      }
+    });
+  } catch (error) {
+    console.error('Supplier readiness check error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to check supplier driver readiness',
+      error: error.message
+    });
+  }
+};
+
+
+
+
+// Customer dashboard: fetch available quantity-price options.
+const getCustomerQuantityPricing = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const pricingResult = await query(
+      `
+      SELECT quantity_in_gallon, base_price
+      FROM quantity_pricing
+      ORDER BY quantity_in_gallon ASC
+      `
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        quantities: pricingResult.rows
+      }
+    });
+  } catch (error) {
+    console.error('Get quantity pricing error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch quantity pricing',
+      error: error.message
+    });
+  }
+};
+
+// Customer dashboard: create or replace open order.
+const startCustomerOrder = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const customerId = auth.userId;
+    const deliveryLocation = (req.body.delivery_location || '').toString().trim();
+    const requestedCapacityRaw = req.body.requested_capacity;
+    const customerBidPriceRaw = req.body.customer_bid_price;
+
+    if (!deliveryLocation) {
+      return res.status(400).json({
+        success: false,
+        message: 'delivery_location is required'
+      });
+    }
+
+    if (requestedCapacityRaw === undefined || requestedCapacityRaw === null || requestedCapacityRaw === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'requested_capacity is required'
+      });
+    }
+
+    if (customerBidPriceRaw === undefined || customerBidPriceRaw === null || customerBidPriceRaw === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'customer_bid_price is required'
+      });
+    }
+
+    const requestedCapacity = Number(requestedCapacityRaw);
+    const customerBidPrice = Number(customerBidPriceRaw);
+
+    if (!Number.isFinite(requestedCapacity) || requestedCapacity <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'requested_capacity must be a positive number'
+      });
+    }
+
+    if (!Number.isFinite(customerBidPrice) || customerBidPrice <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'customer_bid_price must be a positive number'
+      });
+    }
+
+    const dbResult = await query('SELECT START_ORDER($1, $2, $3, $4) AS result', [
+      customerId,
+      deliveryLocation,
+      requestedCapacity,
+      customerBidPrice
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to create order'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Order created successfully',
+      data: {
+        order_id: response.order_id,
+        next_screen: 'orders_marketplace'
+      }
+    });
+  } catch (error) {
+    console.error('Start customer order error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to create customer order',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   appStartup,
   enterNumber,
@@ -426,5 +817,11 @@ module.exports = {
   verifyOTP,
   enterDetailsCustomer,
   enterDetailsDriver,
-  enterDetailsSupplier
+  enterDetailsSupplier,
+  addSupplierDriver,
+  listSupplierDrivers,
+  removeSupplierDriver,
+  getSupplierDriverReadiness,
+  getCustomerQuantityPricing,
+  startCustomerOrder
 };
