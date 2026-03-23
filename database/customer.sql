@@ -96,6 +96,8 @@ RETURNS JSON AS $$
 DECLARE
     v_customer_role VARCHAR(20);
     v_new_order_id INTEGER;
+    v_existing_active_order_id INTEGER;
+    v_existing_active_order_status VARCHAR(20);
     v_base_price INTEGER;
     v_min_price NUMERIC(10,2);
     v_max_price NUMERIC(10,2);
@@ -174,10 +176,24 @@ BEGIN
             'message', 'Incorrect pricing'
         );
     END IF;
-    
-    -- Delete any existing open order for this customer
-    DELETE FROM ORDERS 
-    WHERE CUSTOMER_ID = p_customer_id AND STATUS = 'open';
+
+    -- Enforce one active order per customer.
+    SELECT order_id, status
+    INTO v_existing_active_order_id, v_existing_active_order_status
+    FROM orders
+    WHERE customer_id = p_customer_id
+      AND status IN ('open', 'supplier_timer', 'accepted', 'ride_started', 'reached')
+    ORDER BY created_at DESC
+    LIMIT 1;
+
+    IF FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'You already have an active order. Complete or cancel it before placing a new one',
+            'active_order_id', v_existing_active_order_id,
+            'active_order_status', v_existing_active_order_status
+        );
+    END IF;
     
     -- Insert new order with status 'open'
     INSERT INTO ORDERS (
@@ -232,6 +248,9 @@ RETURNS JSON AS $$
 DECLARE
     v_bid_record RECORD;
     v_order_exists BOOLEAN;
+    v_available_driver_count INTEGER;
+    v_active_order_count INTEGER;
+    v_rows_updated INTEGER;
 BEGIN
     -- Validate inputs
     IF p_bid_id IS NULL THEN
@@ -248,17 +267,29 @@ BEGIN
         );
     END IF;
     
-    -- Get bid details
-    SELECT order_id, supplier_id, bid_price INTO v_bid_record
+        -- Remove this bid if it has already expired (90-second validity).
+        DELETE FROM bids
+        WHERE bid_id = p_bid_id
+            AND created_at < (CURRENT_TIMESTAMP - INTERVAL '90 seconds');
+
+        -- Get bid details only if still valid.
+        SELECT order_id, supplier_id, bid_price INTO v_bid_record
     FROM bids
-    WHERE bid_id = p_bid_id;
+        WHERE bid_id = p_bid_id
+            AND created_at >= (CURRENT_TIMESTAMP - INTERVAL '90 seconds');
     
     IF NOT FOUND THEN
         RETURN json_build_object(
             'code', 0,
-            'message', 'Bid not found'
+            'message', 'Bid not found or expired'
         );
     END IF;
+
+    -- Serialize accepts for this supplier to avoid race-condition over-allocation.
+    PERFORM 1
+    FROM suppliers
+    WHERE user_id = v_bid_record.supplier_id
+    FOR UPDATE;
     
     -- Verify order belongs to customer AND is still open (combined check)
     SELECT EXISTS(
@@ -274,6 +305,36 @@ BEGIN
             'message', 'Order is not available for bid acceptance'
         );
     END IF;
+
+    -- Supplier can hold multiple active orders only up to available linked drivers.
+    SELECT COUNT(*)
+    INTO v_available_driver_count
+    FROM supplier_drivers
+    WHERE supplier_user_id = v_bid_record.supplier_id
+      AND driver_user_id IS NOT NULL
+      AND available = TRUE;
+
+    IF v_available_driver_count <= 0 THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Selected supplier has no available drivers for a new active order'
+        );
+    END IF;
+
+    SELECT COUNT(*)
+    INTO v_active_order_count
+    FROM orders
+    WHERE supplier_id = v_bid_record.supplier_id
+      AND status IN ('supplier_timer', 'accepted', 'ride_started', 'reached');
+
+    IF v_active_order_count >= v_available_driver_count THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Selected supplier has reached active-order capacity based on available drivers',
+            'active_orders', v_active_order_count,
+            'available_drivers', v_available_driver_count
+        );
+    END IF;
     
     -- Update order with accepted bid details
     UPDATE orders
@@ -281,7 +342,18 @@ BEGIN
         accepted_price = v_bid_record.bid_price,
         time_limit_for_supplier = CURRENT_TIMESTAMP + INTERVAL '5 minutes',
         status = 'supplier_timer'
-    WHERE order_id = v_bid_record.order_id;
+    WHERE order_id = v_bid_record.order_id
+      AND customer_id = p_customer_id
+      AND status = 'open';
+
+    GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
+
+    IF v_rows_updated = 0 THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order is not available for bid acceptance'
+        );
+    END IF;
     
     RETURN json_build_object(
         'code', 1,
@@ -293,6 +365,203 @@ EXCEPTION
         RETURN json_build_object(
             'code', 0,
             'message', 'Failed to accept bid: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: View bids for customer's open order
+-- ============================================================================
+-- Purpose: Returns currently valid supplier bids (90-second validity window)
+--          for a customer's own order, only while order is still open.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION view_order_bids_customer(
+    p_customer_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_customer_id INTEGER;
+    v_order_status VARCHAR(20);
+    v_bids JSON;
+BEGIN
+    IF p_customer_id IS NULL OR p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Customer ID and Order ID cannot be null'
+        );
+    END IF;
+
+        -- Remove expired bids first so customer only sees currently valid bids.
+    DELETE FROM bids
+    WHERE order_id = p_order_id
+            AND created_at < (CURRENT_TIMESTAMP - INTERVAL '90 seconds');
+
+    SELECT customer_id, status
+    INTO v_order_customer_id, v_order_status
+    FROM orders
+    WHERE order_id = p_order_id;
+
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found'
+        );
+    END IF;
+
+    IF v_order_customer_id != p_customer_id THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order does not belong to you'
+        );
+    END IF;
+
+    IF v_order_status != 'open' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Bids are only visible while order is open'
+        );
+    END IF;
+
+    SELECT COALESCE(json_agg(
+        json_build_object(
+            'bid_id', b.bid_id,
+            'supplier_id', b.supplier_id,
+            'supplier_name', u.name,
+            'supplier_phone', u.phone,
+            'supplier_rating', s.rating,
+            'bid_price', b.bid_price,
+            'created_at', b.created_at,
+            'expires_at', (b.created_at + INTERVAL '90 seconds')
+        ) ORDER BY b.bid_price ASC, b.created_at DESC
+    ), '[]'::json) INTO v_bids
+    FROM bids b
+    JOIN users u ON u.user_id = b.supplier_id
+    LEFT JOIN suppliers s ON s.user_id = b.supplier_id
+    WHERE b.order_id = p_order_id
+    AND b.created_at >= (CURRENT_TIMESTAMP - INTERVAL '90 seconds');
+
+    RETURN json_build_object(
+        'code', 1,
+        'order_id', p_order_id,
+        'bids', v_bids
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to view order bids: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Update customer bid for open order
+-- ============================================================================
+-- Purpose: Customer can adjust own bid while order remains open.
+--          Any existing supplier bids are cleared when customer changes price.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION update_customer_open_order_bid(
+    p_customer_id INTEGER,
+    p_order_id INTEGER,
+    p_customer_bid_price NUMERIC(7,0)
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_customer_id INTEGER;
+    v_order_status VARCHAR(20);
+    v_requested_capacity NUMERIC(5,0);
+    v_base_price INTEGER;
+    v_min_price NUMERIC(10,2);
+    v_max_price NUMERIC(10,2);
+BEGIN
+    IF p_customer_id IS NULL OR p_order_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Customer ID and Order ID cannot be null'
+        );
+    END IF;
+
+    IF p_customer_bid_price IS NULL OR p_customer_bid_price <= 0 THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Bid price must be greater than 0'
+        );
+    END IF;
+
+    SELECT customer_id, status, requested_capacity
+    INTO v_order_customer_id, v_order_status, v_requested_capacity
+    FROM orders
+    WHERE order_id = p_order_id;
+
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order not found'
+        );
+    END IF;
+
+    IF v_order_customer_id != p_customer_id THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Order does not belong to you'
+        );
+    END IF;
+
+    IF v_order_status != 'open' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Cannot update bid after supplier bid acceptance or cancellation'
+        );
+    END IF;
+
+    SELECT base_price INTO v_base_price
+    FROM quantity_pricing
+    WHERE quantity_in_gallon = v_requested_capacity;
+
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Invalid order quantity pricing setup'
+        );
+    END IF;
+
+    v_min_price := v_base_price * 0.85;
+    v_max_price := v_base_price * 3.0;
+
+    IF p_customer_bid_price < v_min_price OR p_customer_bid_price > v_max_price THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Incorrect pricing'
+        );
+    END IF;
+
+    UPDATE orders
+    SET customer_bid_price = p_customer_bid_price,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE order_id = p_order_id
+      AND customer_id = p_customer_id
+      AND status = 'open';
+
+    -- Customer changed expected price; previous supplier bids are no longer valid.
+    DELETE FROM bids
+    WHERE order_id = p_order_id;
+
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Order bid updated successfully',
+        'order_id', p_order_id,
+        'customer_bid_price', p_customer_bid_price
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to update order bid: ' || SQLERRM
         );
 END;
 $$ LANGUAGE plpgsql;

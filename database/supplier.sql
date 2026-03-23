@@ -436,23 +436,19 @@ RETURNS JSON AS $$
 DECLARE
     v_orders JSON;
 BEGIN
-    -- Query all open orders with customer details
+    -- Query open orders with marketplace-safe summary fields only.
     SELECT json_agg(
         json_build_object(
             'order_id', o.order_id,
-            'customer_id', o.customer_id,
-            'customer_name', u.name,
-            'delivery_location', o.delivery_location,
             'requested_capacity', o.requested_capacity,
             'customer_bid_price', o.customer_bid_price
-        )
+                )
+                ORDER BY o.created_at DESC
     ) INTO v_orders
     FROM orders o
-    INNER JOIN users u ON o.customer_id = u.user_id
     WHERE o.status = 'open'
       AND o.supplier_id IS NULL
-      AND o.driver_id IS NULL
-    ORDER BY o.created_at DESC;
+            AND o.driver_id IS NULL;
     
     -- Return empty array if no orders found
     IF v_orders IS NULL THEN
@@ -512,11 +508,13 @@ CREATE TRIGGER trigger_notify_orders_updated
 -- Code: 1=Success, 0=Order not found or not open
 -- ============================================================================
 CREATE OR REPLACE FUNCTION view_order_details(
-    p_order_id INTEGER
+    p_order_id INTEGER,
+    p_supplier_id INTEGER
 )
 RETURNS JSON AS $$
 DECLARE
     v_order_record RECORD;
+    v_available_driver_count INTEGER;
 BEGIN
     -- Validate order_id
     IF p_order_id IS NULL THEN
@@ -525,18 +523,42 @@ BEGIN
             'message', 'Order ID cannot be null'
         );
     END IF;
+
+    IF p_supplier_id IS NULL THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier ID cannot be null'
+        );
+    END IF;
+
+    -- Only suppliers with at least one linked and available driver can view full details.
+    SELECT COUNT(*)
+    INTO v_available_driver_count
+    FROM supplier_drivers
+    WHERE supplier_user_id = p_supplier_id
+      AND driver_user_id IS NOT NULL
+      AND available = TRUE;
+
+    IF v_available_driver_count <= 0 THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'You need at least one available linked driver to view full order details'
+        );
+    END IF;
     
     -- Get order details
     SELECT 
-        order_id,
-        customer_id,
-        delivery_location,
-        requested_capacity,
-        customer_bid_price,
-        status
+        o.order_id,
+        o.customer_id,
+        u.name AS customer_name,
+        o.delivery_location,
+        o.requested_capacity,
+        o.customer_bid_price,
+        o.status
     INTO v_order_record
-    FROM orders
-    WHERE order_id = p_order_id;
+    FROM orders o
+    INNER JOIN users u ON u.user_id = o.customer_id
+    WHERE o.order_id = p_order_id;
     
     -- Check if order exists
     IF NOT FOUND THEN
@@ -559,6 +581,7 @@ BEGIN
         'code', 1,
         'order_id', v_order_record.order_id,
         'customer_id', v_order_record.customer_id,
+        'customer_name', v_order_record.customer_name,
         'delivery_location', v_order_record.delivery_location,
         'requested_capacity', v_order_record.requested_capacity,
         'customer_bid_price', v_order_record.customer_bid_price
@@ -595,6 +618,9 @@ RETURNS JSON AS $$
 DECLARE
     v_order_status VARCHAR(20);
     v_order_supplier_id INTEGER;
+    v_existing_bid_created_at TIMESTAMP;
+    v_wait_seconds INTEGER;
+    v_available_driver_count INTEGER;
 BEGIN
     -- Validate inputs
     IF p_order_id IS NULL THEN
@@ -615,6 +641,21 @@ BEGIN
         RETURN json_build_object(
             'code', 0,
             'message', 'Bid price must be greater than 0'
+        );
+    END IF;
+
+    -- Supplier must have at least one linked and currently available driver.
+    SELECT COUNT(*)
+    INTO v_available_driver_count
+    FROM supplier_drivers
+    WHERE supplier_user_id = p_supplier_id
+      AND driver_user_id IS NOT NULL
+      AND available = TRUE;
+
+    IF v_available_driver_count <= 0 THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'You need at least one available linked driver before placing bids'
         );
     END IF;
     
@@ -638,22 +679,54 @@ BEGIN
         );
     END IF;
     
-    -- Insert bid into BIDS table
-    INSERT INTO BIDS (
-        ORDER_ID,
-        SUPPLIER_ID,
-        BID_PRICE,
-        CREATED_AT
+        -- Expire old bids from this supplier on this order after 90 seconds.
+    DELETE FROM bids
+    WHERE order_id = p_order_id
+      AND supplier_id = p_supplier_id
+            AND created_at < (CURRENT_TIMESTAMP - INTERVAL '90 seconds');
+
+        -- Enforce cooldown: one bid per 90 seconds per supplier per order.
+    SELECT created_at
+    INTO v_existing_bid_created_at
+    FROM bids
+    WHERE order_id = p_order_id
+      AND supplier_id = p_supplier_id
+            AND created_at >= (CURRENT_TIMESTAMP - INTERVAL '90 seconds')
+    ORDER BY created_at DESC
+    LIMIT 1;
+
+    IF FOUND THEN
+                v_wait_seconds := CEIL(EXTRACT(EPOCH FROM ((v_existing_bid_created_at + INTERVAL '90 seconds') - CURRENT_TIMESTAMP)));
+        v_wait_seconds := GREATEST(v_wait_seconds, 1);
+
+        RETURN json_build_object(
+            'code', 0,
+                        'message', 'You can send only one bid every 90 seconds for this order',
+            'retry_after_seconds', v_wait_seconds
+        );
+    END IF;
+
+    -- Keep only one current bid row per supplier per order.
+    INSERT INTO bids (
+        order_id,
+        supplier_id,
+        bid_price,
+        created_at
     ) VALUES (
         p_order_id,
         p_supplier_id,
         p_bid_price,
         CURRENT_TIMESTAMP
-    );
+    )
+    ON CONFLICT (order_id, supplier_id)
+    DO UPDATE SET
+        bid_price = EXCLUDED.bid_price,
+        created_at = EXCLUDED.created_at;
     
     RETURN json_build_object(
         'code', 1,
-        'message', 'Bid placed successfully'
+        'message', 'Bid placed successfully',
+        'expires_at', (CURRENT_TIMESTAMP + INTERVAL '90 seconds')
     );
     
 EXCEPTION
@@ -1023,14 +1096,13 @@ BEGIN
             'customer_phone', cu.phone,
             'driver_name', du.name,
             'driver_phone', du.phone
-        )
+                ) ORDER BY o.created_at DESC
     ), '[]'::json) INTO v_orders
     FROM orders o
     LEFT JOIN users cu ON o.customer_id = cu.user_id
     LEFT JOIN users du ON o.driver_id = du.user_id
     WHERE o.supplier_id = p_supplier_id
-      AND o.status IN ('supplier_timer', 'accepted', 'ride_started', 'reached')
-    ORDER BY o.created_at DESC;
+            AND o.status IN ('supplier_timer', 'accepted', 'ride_started', 'reached');
     
     RETURN json_build_object(
         'code', 1,

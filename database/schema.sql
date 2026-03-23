@@ -105,6 +105,19 @@ CREATE TABLE IF NOT EXISTS BIDS (
     CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
+-- Keep only the latest bid row per (order_id, supplier_id) before enforcing uniqueness.
+DELETE FROM bids b
+USING bids keep
+WHERE b.order_id = keep.order_id
+    AND b.supplier_id = keep.supplier_id
+    AND (
+        b.created_at < keep.created_at
+        OR (b.created_at = keep.created_at AND b.bid_id < keep.bid_id)
+    );
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_bids_order_supplier
+ON bids(order_id, supplier_id);
+
 
 
 CREATE TABLE IF NOT EXISTS ORDER_HISTORY (

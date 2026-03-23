@@ -723,7 +723,7 @@ const getCustomerQuantityPricing = async (req, res) => {
   }
 };
 
-// Customer dashboard: create or replace open order.
+// Customer dashboard: create order when customer has no active order.
 const startCustomerOrder = async (req, res) => {
   try {
     const auth = await getCustomerUserId(req);
@@ -777,6 +777,28 @@ const startCustomerOrder = async (req, res) => {
       });
     }
 
+    const activeOrderCheckResult = await query(
+      `SELECT order_id, status
+       FROM orders
+       WHERE customer_id = $1
+         AND status IN ('open', 'supplier_timer', 'accepted', 'ride_started', 'reached')
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [customerId]
+    );
+
+    const existingActiveOrder = activeOrderCheckResult.rows[0] || null;
+    if (existingActiveOrder) {
+      return res.status(409).json({
+        success: false,
+        message: 'You already have an active order. Complete or cancel it before placing a new one',
+        data: {
+          active_order_id: existingActiveOrder.order_id,
+          active_order_status: existingActiveOrder.status
+        }
+      });
+    }
+
     const dbResult = await query('SELECT START_ORDER($1, $2, $3, $4) AS result', [
       customerId,
       deliveryLocation,
@@ -810,6 +832,482 @@ const startCustomerOrder = async (req, res) => {
   }
 };
 
+// Customer marketplace: view valid supplier bids for own open order.
+const listBidsForCustomerOpenOrder = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const customerId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    const dbResult = await query('SELECT view_order_bids_customer($1, $2) AS result', [
+      customerId,
+      orderId
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      const message = (response?.message || '').toString().toLowerCase();
+      const statusCode = message.includes('does not belong to you') ? 403 : 400;
+
+      return res.status(statusCode).json({
+        success: false,
+        message: response?.message || 'Failed to fetch bids'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        order_id: response.order_id,
+        bids: Array.isArray(response.bids) ? response.bids : []
+      }
+    });
+  } catch (error) {
+    console.error('List customer order bids error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order bids',
+      error: error.message
+    });
+  }
+};
+
+// Customer marketplace: update own bid on open order.
+const updateCustomerOpenOrderBid = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const customerId = auth.userId;
+    const orderId = Number(req.params.orderId);
+    const customerBidPrice = Number(req.body.customer_bid_price);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    if (!Number.isFinite(customerBidPrice) || customerBidPrice <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'customer_bid_price must be a positive number'
+      });
+    }
+
+    const dbResult = await query('SELECT update_customer_open_order_bid($1, $2, $3) AS result', [
+      customerId,
+      orderId,
+      customerBidPrice
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      const message = (response?.message || '').toString().toLowerCase();
+      const statusCode = message.includes('does not belong to you')
+        ? 403
+        : message.includes('cannot update bid')
+          ? 409
+          : 400;
+
+      return res.status(statusCode).json({
+        success: false,
+        message: response?.message || 'Failed to update bid'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Order bid updated successfully',
+      data: {
+        order_id: response.order_id,
+        customer_bid_price: response.customer_bid_price
+      }
+    });
+  } catch (error) {
+    console.error('Update customer open order bid error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update order bid',
+      error: error.message
+    });
+  }
+};
+
+// Customer marketplace: accept supplier bid for own open order.
+const acceptSupplierBidForCustomer = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const customerId = auth.userId;
+    const orderId = Number(req.params.orderId);
+    const bidId = Number(req.body.bid_id);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    if (!Number.isInteger(bidId) || bidId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'bid_id must be a positive integer'
+      });
+    }
+
+    const bidBelongsResult = await query(
+      'SELECT 1 FROM bids WHERE bid_id = $1 AND order_id = $2',
+      [bidId, orderId]
+    );
+
+    if (bidBelongsResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Bid not found for this order'
+      });
+    }
+
+    const dbResult = await query('SELECT accept_bid($1, $2) AS result', [
+      bidId,
+      customerId
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      const message = (response?.message || '').toString().toLowerCase();
+      const statusCode = message.includes('expired')
+        ? 410
+        : message.includes('capacity') || message.includes('not available') || message.includes('no available drivers')
+          ? 409
+          : 400;
+
+      return res.status(statusCode).json({
+        success: false,
+        message: response?.message || 'Failed to accept bid'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Bid accepted successfully',
+      data: {
+        order_id: orderId,
+        bid_id: bidId,
+        next_screen: 'active_order'
+      }
+    });
+  } catch (error) {
+    console.error('Accept supplier bid for customer error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to accept supplier bid',
+      error: error.message
+    });
+  }
+};
+
+
+
+// Supplier marketplace: view currently open orders.
+const listAvailableOrdersForSupplier = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const dbResult = await query('SELECT view_available_orders() AS result');
+    const response = dbResult.rows[0].result;
+
+    if (response && !Array.isArray(response) && response.error) {
+      return res.status(400).json({
+        success: false,
+        message: response.error
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        orders: Array.isArray(response) ? response : []
+      }
+    });
+  } catch (error) {
+    console.error('List available orders error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch available orders',
+      error: error.message
+    });
+  }
+};
+
+// Supplier marketplace: view details of one open order.
+const getAvailableOrderDetailsForSupplier = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const orderId = Number(req.params.orderId);
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    const dbResult = await query('SELECT view_order_details($1, $2) AS result', [orderId, auth.userId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      const message = (response?.message || '').toString().toLowerCase();
+      const statusCode = message.includes('available linked driver') ? 403 : 400;
+
+      return res.status(statusCode).json({
+        success: false,
+        message: response?.message || 'Failed to fetch order details'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: response
+    });
+  } catch (error) {
+    console.error('Get available order details error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order details',
+      error: error.message
+    });
+  }
+};
+
+// Supplier marketplace: place bid on open order.
+const placeSupplierBid = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const supplierId = auth.userId;
+    const orderId = Number(req.params.orderId);
+    const bidPrice = Number(req.body.bid_price);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    if (!Number.isFinite(bidPrice) || bidPrice <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'bid_price must be a positive number'
+      });
+    }
+
+    const supplierDriverAvailabilityResult = await query(
+      `SELECT COUNT(*)::int AS available_driver_count
+       FROM supplier_drivers
+       WHERE supplier_user_id = $1
+         AND driver_user_id IS NOT NULL
+         AND available = TRUE`,
+      [supplierId]
+    );
+
+    const availableDriverCount = supplierDriverAvailabilityResult.rows[0]?.available_driver_count || 0;
+    if (availableDriverCount <= 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'You need at least one available linked driver before placing bids'
+      });
+    }
+
+    const dbResult = await query('SELECT send_bid($1, $2, $3) AS result', [
+      orderId,
+      supplierId,
+      bidPrice
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      const message = (response?.message || '').toString().toLowerCase();
+      const statusCode = response?.retry_after_seconds
+        ? 429
+        : message.includes('not available') || message.includes('capacity')
+          ? 409
+          : 400;
+
+      return res.status(statusCode).json({
+        success: false,
+        message: response?.message || 'Failed to place bid',
+        data: response?.retry_after_seconds
+          ? { retry_after_seconds: response.retry_after_seconds }
+          : undefined
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Bid placed successfully',
+      data: {
+        order_id: orderId,
+        supplier_id: supplierId,
+        expires_at: response.expires_at || null
+      }
+    });
+  } catch (error) {
+    console.error('Place supplier bid error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to place supplier bid',
+      error: error.message
+    });
+  }
+};
+
+// Supplier dashboard: view all active orders assigned to supplier.
+const listActiveOrdersForSupplier = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const supplierId = auth.userId;
+    const activeOrdersResult = await query(
+      `SELECT
+         o.order_id,
+         o.delivery_location,
+         o.requested_capacity AS quantity,
+         o.accepted_price,
+         o.status,
+         o.created_at,
+         o.order_confirmed_at,
+         o.time_limit_for_supplier,
+         cu.name AS customer_name,
+         cu.phone AS customer_phone,
+         du.name AS driver_name,
+         du.phone AS driver_phone
+       FROM orders o
+       LEFT JOIN users cu ON o.customer_id = cu.user_id
+       LEFT JOIN users du ON o.driver_id = du.user_id
+       WHERE o.supplier_id = $1
+         AND o.status IN ('supplier_timer', 'accepted', 'ride_started', 'reached')
+       ORDER BY o.created_at DESC`,
+      [supplierId]
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        supplier_user_id: supplierId,
+        orders: activeOrdersResult.rows || []
+      }
+    });
+  } catch (error) {
+    console.error('List active supplier orders error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch active supplier orders',
+      error: error.message
+    });
+  }
+};
+
+// Supplier dashboard: view details for one active/assigned order.
+const getActiveOrderDetailsForSupplier = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const supplierId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    const dbResult = await query('SELECT get_order_details_supplier($1, $2) AS result', [
+      supplierId,
+      orderId
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to fetch supplier order details'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: response
+    });
+  } catch (error) {
+    console.error('Get active supplier order details error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch supplier order details',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   appStartup,
   enterNumber,
@@ -823,5 +1321,13 @@ module.exports = {
   removeSupplierDriver,
   getSupplierDriverReadiness,
   getCustomerQuantityPricing,
-  startCustomerOrder
+  startCustomerOrder,
+  listBidsForCustomerOpenOrder,
+  updateCustomerOpenOrderBid,
+  acceptSupplierBidForCustomer,
+  listAvailableOrdersForSupplier,
+  getAvailableOrderDetailsForSupplier,
+  placeSupplierBid,
+  listActiveOrdersForSupplier,
+  getActiveOrderDetailsForSupplier
 };
