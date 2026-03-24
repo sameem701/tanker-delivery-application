@@ -758,6 +758,8 @@ const startCustomerOrder = async (req, res) => {
     }
 
     const customerId = auth.userId;
+    await query('SELECT cleanup_expired_failures()');
+
     const deliveryLocation = (req.body.delivery_location || '').toString().trim();
     const requestedCapacityRaw = req.body.requested_capacity;
     const customerBidPriceRaw = req.body.customer_bid_price;
@@ -1057,6 +1059,77 @@ const acceptSupplierBidForCustomer = async (req, res) => {
   }
 };
 
+// Customer post-delivery: submit rating or explicitly skip rating (null).
+const submitOrderRatingForCustomer = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const customerId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    let rating = null;
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'rating')) {
+      const rawRating = req.body.rating;
+      if (rawRating !== null && rawRating !== undefined && rawRating !== '') {
+        rating = Number(rawRating);
+      }
+    }
+
+    if (rating !== null && (!Number.isInteger(rating) || rating < 1 || rating > 5)) {
+      return res.status(400).json({
+        success: false,
+        message: 'rating must be null or an integer between 1 and 5'
+      });
+    }
+
+    const dbResult = await query('SELECT submit_rating($1, $2, $3) AS result', [
+      customerId,
+      orderId,
+      rating
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      const msg = (response?.message || '').toString().toLowerCase();
+      const statusCode = msg.includes('already submitted') ? 409 : 400;
+
+      return res.status(statusCode).json({
+        success: false,
+        message: response?.message || 'Failed to submit rating'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Rating submitted successfully',
+      data: {
+        order_id: orderId,
+        rating: rating
+      }
+    });
+  } catch (error) {
+    console.error('Submit rating error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to submit rating',
+      error: error.message
+    });
+  }
+};
+
 
 
 // Supplier marketplace: view currently open orders.
@@ -1243,35 +1316,21 @@ const listActiveOrdersForSupplier = async (req, res) => {
     }
 
     const supplierId = auth.userId;
-    const activeOrdersResult = await query(
-      `SELECT
-         o.order_id,
-         o.delivery_location,
-         o.requested_capacity AS quantity,
-         o.accepted_price,
-         o.status,
-         o.created_at,
-         o.order_confirmed_at,
-         o.time_limit_for_supplier,
-         cu.name AS customer_name,
-         cu.phone AS customer_phone,
-         du.name AS driver_name,
-         du.phone AS driver_phone
-       FROM orders o
-       LEFT JOIN users cu ON o.customer_id = cu.user_id
-       LEFT JOIN users du ON o.driver_id = du.user_id
-       WHERE o.supplier_id = $1
-         AND o.status IN ('supplier_timer', 'accepted', 'ride_started', 'reached')
-         AND (o.status != 'supplier_timer' OR o.time_limit_for_supplier IS NULL OR CURRENT_TIMESTAMP <= o.time_limit_for_supplier)
-       ORDER BY o.created_at DESC`,
-      [supplierId]
-    );
+    const dbResult = await query('SELECT get_active_orders_supplier($1) AS result', [supplierId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to fetch active supplier orders'
+      });
+    }
 
     return res.status(200).json({
       success: true,
       data: {
         supplier_user_id: supplierId,
-        orders: activeOrdersResult.rows || []
+        orders: Array.isArray(response.orders) ? response.orders : []
       }
     });
   } catch (error) {
@@ -1608,6 +1667,153 @@ const rejectAssignedOrderForDriver = async (req, res) => {
   }
 };
 
+// Driver flow: move accepted order to ride_started.
+const startRideForDriver = async (req, res) => {
+  try {
+    const auth = await getDriverUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const driverId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    const dbResult = await query('SELECT start_ride($1, $2) AS result', [driverId, orderId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      return res.status(409).json({
+        success: false,
+        message: response?.message || 'Failed to start ride'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Ride started successfully',
+      data: {
+        order_id: orderId,
+        status: 'ride_started'
+      }
+    });
+  } catch (error) {
+    console.error('Driver start ride error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to start ride',
+      error: error.message
+    });
+  }
+};
+
+// Driver flow: mark ride as reached.
+const markOrderReachedForDriver = async (req, res) => {
+  try {
+    const auth = await getDriverUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const driverId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    const dbResult = await query('SELECT mark_order_reached($1, $2) AS result', [driverId, orderId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      return res.status(409).json({
+        success: false,
+        message: response?.message || 'Failed to mark order as reached'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Marked as reached successfully',
+      data: {
+        order_id: orderId,
+        status: 'reached'
+      }
+    });
+  } catch (error) {
+    console.error('Driver mark reached error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to mark order as reached',
+      error: error.message
+    });
+  }
+};
+
+// Driver flow: finish delivery and archive order snapshot.
+const finishOrderForDriver = async (req, res) => {
+  try {
+    const auth = await getDriverUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const driverId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    const dbResult = await query('SELECT finish_order($1, $2) AS result', [driverId, orderId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      return res.status(409).json({
+        success: false,
+        message: response?.message || 'Failed to finish order'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Order completed successfully',
+      data: {
+        order_id: orderId,
+        status: 'completed'
+      }
+    });
+  } catch (error) {
+    console.error('Driver finish order error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to finish order',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   appStartup,
   enterNumber,
@@ -1625,6 +1831,7 @@ module.exports = {
   listBidsForCustomerOpenOrder,
   updateCustomerOpenOrderBid,
   acceptSupplierBidForCustomer,
+  submitOrderRatingForCustomer,
   listAvailableOrdersForSupplier,
   getAvailableOrderDetailsForSupplier,
   placeSupplierBid,
@@ -1633,5 +1840,8 @@ module.exports = {
   listAssignableDriversForSupplierOrder,
   assignDriverForSupplierOrder,
   acceptAssignedOrderForDriver,
-  rejectAssignedOrderForDriver
+  rejectAssignedOrderForDriver,
+  startRideForDriver,
+  markOrderReachedForDriver,
+  finishOrderForDriver
 };

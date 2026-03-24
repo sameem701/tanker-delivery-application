@@ -136,8 +136,17 @@ CREATE TABLE IF NOT EXISTS ORDER_HISTORY (
     STATUS VARCHAR(20) NOT NULL CHECK (STATUS IN ('completed', 'cancelled')),
     ORDER_DATE TIMESTAMP NOT NULL,
     REASON TEXT,
+    CUSTOMER_RATING INTEGER,
+    RATED_AT TIMESTAMP,
     CREATED_AT TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Backfill-safe migration for existing environments.
+ALTER TABLE order_history
+    ADD COLUMN IF NOT EXISTS customer_rating INTEGER;
+
+ALTER TABLE order_history
+    ADD COLUMN IF NOT EXISTS rated_at TIMESTAMP;
 
 
 -- For local storage of tokens
@@ -549,6 +558,40 @@ EXCEPTION
             'code', 2,
             'message', 'Verification failed: ' || SQLERRM
         );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- Purpose: Cleanup failed timeout states.
+-- Behavior:
+--   1) Delete expired pending driver assignments.
+--   2) Delete supplier_timer orders whose supplier window has expired.
+-- Notes:
+--   - Expired supplier failures are hard-deleted from orders.
+--   - They are NOT inserted into order_history.
+--   - Deleting an order cascades to driver_assignment rows for that order.
+CREATE OR REPLACE FUNCTION cleanup_expired_failures()
+RETURNS VOID AS $$
+BEGIN
+        -- Remove pending driver assignments that are past their own time limit.
+        DELETE FROM driver_assignment
+        WHERE order_rejected = FALSE
+            AND time_limit_for_driver IS NOT NULL
+            AND CURRENT_TIMESTAMP > time_limit_for_driver;
+
+        -- Remove assignments where supplier timer is already expired for the order.
+        DELETE FROM driver_assignment da
+        USING orders o
+        WHERE da.order_id = o.order_id
+            AND o.status = 'supplier_timer'
+            AND o.time_limit_for_supplier IS NOT NULL
+            AND CURRENT_TIMESTAMP > o.time_limit_for_supplier;
+
+        -- Remove expired supplier-timer orders (failure cleanup, no history logging).
+        DELETE FROM orders
+        WHERE status = 'supplier_timer'
+            AND time_limit_for_supplier IS NOT NULL
+            AND CURRENT_TIMESTAMP > time_limit_for_supplier;
 END;
 $$ LANGUAGE plpgsql;
 

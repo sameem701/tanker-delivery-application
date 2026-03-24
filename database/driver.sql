@@ -170,6 +170,8 @@ DECLARE
     v_supplier_time_limit TIMESTAMP;
     v_rows_updated INTEGER;
 BEGIN
+    PERFORM cleanup_expired_failures();
+
     -- Validate inputs
     IF p_driver_id IS NULL OR p_order_id IS NULL THEN
         RETURN json_build_object(
@@ -280,6 +282,8 @@ RETURNS JSON AS $$
 DECLARE
     v_time_limit TIMESTAMP;
 BEGIN
+    PERFORM cleanup_expired_failures();
+
     -- Validate inputs
     IF p_driver_id IS NULL OR p_order_id IS NULL THEN
         RETURN json_build_object(
@@ -349,6 +353,8 @@ RETURNS JSON AS $$
 DECLARE
     v_order_record RECORD;
 BEGIN
+    PERFORM cleanup_expired_failures();
+
     -- Validate inputs
     IF p_driver_id IS NULL THEN
         RETURN json_build_object(
@@ -429,6 +435,8 @@ DECLARE
     v_order_status VARCHAR(20);
     v_order_driver_id INTEGER;
 BEGIN
+    PERFORM cleanup_expired_failures();
+
     -- Validate inputs
     IF p_driver_id IS NULL THEN
         RETURN json_build_object(
@@ -512,6 +520,8 @@ DECLARE
     v_order_status VARCHAR(20);
     v_order_driver_id INTEGER;
 BEGIN
+    PERFORM cleanup_expired_failures();
+
     -- Validate inputs
     IF p_driver_id IS NULL THEN
         RETURN json_build_object(
@@ -695,15 +705,18 @@ BEGIN
         NULL
     );
     
-    -- Update order status to 'finished'
-    UPDATE orders
-    SET status = 'finished'
-    WHERE order_id = p_order_id;
-    
     -- Set driver as available again
     UPDATE supplier_drivers
     SET available = TRUE
     WHERE driver_user_id = p_driver_id;
+
+    -- Cleanup driver assignment rows for this order.
+    DELETE FROM driver_assignment
+    WHERE order_id = p_order_id;
+
+    -- Remove completed order from active orders table after history snapshot.
+    DELETE FROM orders
+    WHERE order_id = p_order_id;
     
     RETURN json_build_object(
         'code', 1,

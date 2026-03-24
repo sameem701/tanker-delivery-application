@@ -813,6 +813,8 @@ DECLARE
     v_drivers JSON;
     v_order_eligible BOOLEAN;
 BEGIN
+    PERFORM cleanup_expired_failures();
+
     -- Validate input
     IF p_supplier_id IS NULL THEN
         RETURN json_build_object(
@@ -901,6 +903,8 @@ DECLARE
     v_assignment_exists BOOLEAN;
     v_other_pending_assignment_exists BOOLEAN;
 BEGIN
+    PERFORM cleanup_expired_failures();
+
     -- Validate inputs
     IF p_order_id IS NULL OR p_supplier_id IS NULL OR p_driver_id IS NULL THEN
         RETURN json_build_object(
@@ -1024,6 +1028,8 @@ RETURNS JSON AS $$
 DECLARE
     v_order_record RECORD;
 BEGIN
+    PERFORM cleanup_expired_failures();
+
     -- Validate inputs
     IF p_supplier_id IS NULL THEN
         RETURN json_build_object(
@@ -1119,6 +1125,8 @@ RETURNS JSON AS $$
 DECLARE
     v_orders JSON;
 BEGIN
+    PERFORM cleanup_expired_failures();
+
     -- Validate supplier_id
     IF p_supplier_id IS NULL THEN
         RETURN json_build_object(

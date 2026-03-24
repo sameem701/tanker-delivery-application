@@ -11,5 +11,6 @@ router.post('/orders/start', startupController.startCustomerOrder);
 router.get('/orders/:orderId/bids', startupController.listBidsForCustomerOpenOrder);
 router.patch('/orders/:orderId/bid', startupController.updateCustomerOpenOrderBid);
 router.post('/orders/:orderId/accept-bid', startupController.acceptSupplierBidForCustomer);
+router.post('/orders/:orderId/rating', startupController.submitOrderRatingForCustomer);
 
 module.exports = router;

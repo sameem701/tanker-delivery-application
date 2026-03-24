@@ -102,6 +102,8 @@ DECLARE
     v_min_price NUMERIC(10,2);
     v_max_price NUMERIC(10,2);
 BEGIN
+    PERFORM cleanup_expired_failures();
+
     -- Validate customer_id
     IF p_customer_id IS NULL THEN
         RETURN json_build_object(
@@ -252,6 +254,8 @@ DECLARE
     v_active_order_count INTEGER;
     v_rows_updated INTEGER;
 BEGIN
+    PERFORM cleanup_expired_failures();
+
     -- Validate inputs
     IF p_bid_id IS NULL THEN
         RETURN json_build_object(
@@ -676,14 +680,18 @@ CREATE OR REPLACE FUNCTION submit_rating(
 )
 RETURNS JSON AS $$
 DECLARE
-    v_order_customer_id INTEGER;
+    v_customer_phone VARCHAR(20);
+    v_supplier_phone VARCHAR(20);
     v_supplier_id INTEGER;
     v_order_status VARCHAR(20);
+    v_existing_rating INTEGER;
+    v_already_processed BOOLEAN;
     v_current_rating DECIMAL(3,2);
     v_total_orders INTEGER;
     v_new_rating DECIMAL(3,2);
-    v_already_rated BOOLEAN;
 BEGIN
+    PERFORM cleanup_expired_failures();
+
     -- Validate inputs
     IF p_customer_id IS NULL THEN
         RETURN json_build_object(
@@ -698,82 +706,115 @@ BEGIN
             'message', 'Order ID cannot be null'
         );
     END IF;
-    
-    IF p_rating IS NULL OR p_rating < 1 OR p_rating > 5 THEN
+
+    IF p_rating IS NOT NULL AND (p_rating < 1 OR p_rating > 5) THEN
         RETURN json_build_object(
             'code', 0,
             'message', 'Rating must be between 1 and 5'
         );
     END IF;
-    
-    -- Get order details and verify ownership
-    SELECT customer_id, supplier_id, status 
-    INTO v_order_customer_id, v_supplier_id, v_order_status
-    FROM orders
-    WHERE order_id = p_order_id;
-    
+
+    -- Resolve and validate customer identity.
+    SELECT phone INTO v_customer_phone
+    FROM users
+    WHERE user_id = p_customer_id
+      AND role = 'customer';
+
     IF NOT FOUND THEN
         RETURN json_build_object(
             'code', 0,
-            'message', 'Order not found'
+            'message', 'Customer not found'
         );
     END IF;
-    
-    -- Verify customer owns this order
-    IF v_order_customer_id != p_customer_id THEN
+
+    -- Get completed-order snapshot and verify ownership in history.
+    SELECT supplier_phone, status, customer_rating, (rated_at IS NOT NULL)
+    INTO v_supplier_phone, v_order_status, v_existing_rating, v_already_processed
+    FROM order_history
+    WHERE order_id = p_order_id
+      AND customer_phone = v_customer_phone;
+
+    IF NOT FOUND THEN
         RETURN json_build_object(
             'code', 0,
-            'message', 'This order does not belong to you'
+            'message', 'Completed order snapshot not found for this customer'
         );
     END IF;
-    
-    -- Verify order is finished
-    IF v_order_status != 'finished' THEN
+
+    IF v_order_status != 'completed' THEN
         RETURN json_build_object(
             'code', 0,
-            'message', 'Can only rate completed orders. Current status: ' || v_order_status
+            'message', 'Only completed orders can be rated. Current status: ' || v_order_status
         );
     END IF;
-    
-    -- Check if order already rated (exists in order_history with status='completed')
-    SELECT EXISTS(
-        SELECT 1 FROM order_history 
-        WHERE order_id = p_order_id AND status = 'completed'
-    ) INTO v_already_rated;
-    
-    IF v_already_rated THEN
+
+    -- Rating/skip can be submitted only once per order.
+    IF v_already_processed OR v_existing_rating IS NOT NULL THEN
         RETURN json_build_object(
             'code', 0,
-            'message', 'You have already rated this order'
+            'message', 'Rating decision already submitted for this order'
         );
     END IF;
-    
+
+    -- Resolve supplier by phone from immutable history snapshot.
+    SELECT user_id INTO v_supplier_id
+    FROM users
+    WHERE phone = v_supplier_phone
+      AND role = 'supplier';
+
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier not found for this order'
+        );
+    END IF;
+
     -- Get supplier's current rating and total_orders
     SELECT rating, total_orders INTO v_current_rating, v_total_orders
     FROM suppliers
-    WHERE user_id = v_supplier_id;
-    
-    -- Calculate new weighted average rating
-    -- Formula: new_rating = ((current_rating * total_orders) + new_rating) / (total_orders + 1)
-    v_new_rating := ((v_current_rating * v_total_orders) + p_rating) / (v_total_orders + 1);
-    
-    -- Update supplier's rating and increment total_orders
+    WHERE user_id = v_supplier_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier profile not found for this order'
+        );
+    END IF;
+
+    IF p_rating IS NULL THEN
+        -- Customer skipped rating: keep rating unchanged, increment total_orders.
+        UPDATE suppliers
+        SET total_orders = total_orders + 1
+        WHERE user_id = v_supplier_id;
+
+        UPDATE order_history
+        SET customer_rating = NULL,
+            rated_at = CURRENT_TIMESTAMP
+        WHERE order_id = p_order_id
+          AND customer_phone = v_customer_phone;
+
+        RETURN json_build_object(
+            'code', 1,
+            'message', 'Rating skipped. Supplier total orders updated'
+        );
+    END IF;
+
+    -- Customer provided rating: update weighted average and total_orders.
+    v_new_rating := ((COALESCE(v_current_rating, 0) * COALESCE(v_total_orders, 0)) + p_rating)
+                    / (COALESCE(v_total_orders, 0) + 1);
+
     UPDATE suppliers
     SET rating = v_new_rating,
         total_orders = total_orders + 1
     WHERE user_id = v_supplier_id;
-    
-    -- Verify order exists in order_history (should have been inserted by finish_order)
-    IF NOT EXISTS(SELECT 1 FROM order_history WHERE order_id = p_order_id) THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Order not found in history. Order must be completed first.'
-        );
-    END IF;
-    
-    -- Delete from orders table
-    DELETE FROM orders WHERE order_id = p_order_id;
-    
+
+    UPDATE order_history
+    SET customer_rating = p_rating,
+        rated_at = CURRENT_TIMESTAMP
+    WHERE order_id = p_order_id
+      AND customer_phone = v_customer_phone;
+
     RETURN json_build_object(
         'code', 1,
         'message', 'Rating submitted successfully'
