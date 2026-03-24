@@ -806,7 +806,7 @@ const startCustomerOrder = async (req, res) => {
       `SELECT order_id, status
        FROM orders
        WHERE customer_id = $1
-         AND status IN ('open', 'supplier_timer', 'accepted', 'ride_started', 'reached')
+         AND status IN ('open', 'supplier_timer', 'accepted', 'ride_started', 'reached', 'finished')
        ORDER BY created_at DESC
        LIMIT 1`,
       [customerId]
@@ -1414,29 +1414,7 @@ const listAssignableDriversForSupplierOrder = async (req, res) => {
       });
     }
 
-    // Check if supplier time limit has passed
-    const orderCheckResult = await query(
-      'SELECT time_limit_for_supplier FROM orders WHERE order_id = $1 AND supplier_id = $2',
-      [orderId, supplierId]
-    );
-
-    if (orderCheckResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found or does not belong to you'
-      });
-    }
-
-    const timeLimitForSupplier = orderCheckResult.rows[0].time_limit_for_supplier;
-    const now = new Date();
-
-    if (timeLimitForSupplier && new Date(timeLimitForSupplier) < now) {
-      return res.status(410).json({
-        success: false,
-        message: 'Supplier time limit has expired for this order'
-      });
-    }
-
+    // DB function enforces supplier timer, order ownership, and status checks.
     const dbResult = await query('SELECT get_available_drivers_for_supplier($1, $2) AS result', [
       supplierId,
       orderId
@@ -1444,7 +1422,10 @@ const listAssignableDriversForSupplierOrder = async (req, res) => {
     const response = dbResult.rows[0].result;
 
     if (!response || response.code !== 1) {
-      return res.status(400).json({
+      const msg = (response?.message || '').toString().toLowerCase();
+      const statusCode = msg.includes('time limit') ? 410 : 400;
+
+      return res.status(statusCode).json({
         success: false,
         message: response?.message || 'Failed to fetch assignable drivers'
       });
@@ -1496,29 +1477,7 @@ const assignDriverForSupplierOrder = async (req, res) => {
       });
     }
 
-    // Check if supplier time limit has passed
-    const orderCheckResult = await query(
-      'SELECT time_limit_for_supplier FROM orders WHERE order_id = $1 AND supplier_id = $2',
-      [orderId, supplierId]
-    );
-
-    if (orderCheckResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found or does not belong to you'
-      });
-    }
-
-    const timeLimitForSupplier = orderCheckResult.rows[0].time_limit_for_supplier;
-    const now = new Date();
-
-    if (timeLimitForSupplier && new Date(timeLimitForSupplier) < now) {
-      return res.status(410).json({
-        success: false,
-        message: 'Supplier time limit has expired for this order'
-      });
-    }
-
+    // DB function enforces supplier timer, order ownership, driver checks.
     const dbResult = await query('SELECT assign_driver_to_order($1, $2, $3) AS result', [
       orderId,
       supplierId,
@@ -1528,10 +1487,10 @@ const assignDriverForSupplierOrder = async (req, res) => {
 
     if (!response || response.code !== 1) {
       const message = (response?.message || '').toString().toLowerCase();
-      const statusCode = message.includes('pending assignment')
-        ? 409
-        : message.includes('not available') || message.includes('does not belong')
-          ? 400
+      const statusCode = message.includes('time limit')
+        ? 410
+        : message.includes('pending assignment')
+          ? 409
           : 400;
 
       return res.status(statusCode).json({

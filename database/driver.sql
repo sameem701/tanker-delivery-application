@@ -9,7 +9,7 @@
 -- Code: 1=Success, 0=Failure/Not enlisted
 CREATE OR REPLACE FUNCTION enter_details_driver(
     p_driver_id INTEGER,
-    p_name VARCHAR(100)
+    p_name VARCHAR
 )
 RETURNS JSON AS $$
 DECLARE
@@ -672,39 +672,12 @@ BEGIN
     FROM users
     WHERE user_id = v_order_record.driver_id;
     
-    -- Insert into order_history
-    INSERT INTO order_history (
-        order_id,
-        customer_name,
-        customer_phone,
-        supplier_name,
-        supplier_phone,
-        driver_name,
-        driver_phone,
-        customer_location,
-        yard_location,
-        price,
-        quantity,
-        status,
-        order_date,
-        reason
-    ) VALUES (
-        v_order_record.order_id,
-        COALESCE(v_customer_name, ''),
-        COALESCE(v_customer_phone, ''),
-        v_supplier_name,
-        v_supplier_phone,
-        v_driver_name,
-        v_driver_phone,
-        v_order_record.delivery_location,
-        COALESCE(v_yard_location, ''),
-        v_order_record.accepted_price,
-        v_order_record.requested_capacity,
-        'completed',
-        v_order_record.order_confirmed_at,
-        NULL
-    );
-    
+    -- Mark order as finished
+    UPDATE orders
+    SET status = 'finished',
+        updated_at = CURRENT_TIMESTAMP
+    WHERE order_id = p_order_id;
+
     -- Set driver as available again
     UPDATE supplier_drivers
     SET available = TRUE
@@ -714,13 +687,9 @@ BEGIN
     DELETE FROM driver_assignment
     WHERE order_id = p_order_id;
 
-    -- Remove completed order from active orders table after history snapshot.
-    DELETE FROM orders
-    WHERE order_id = p_order_id;
-    
     RETURN json_build_object(
         'code', 1,
-        'message', 'Order completed successfully'
+        'message', 'Order marked as finished. Awaiting customer rating.'
     );
     
 EXCEPTION

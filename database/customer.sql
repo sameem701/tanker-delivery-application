@@ -7,7 +7,7 @@
 -- Code: 1=Success, 0=Failure/Already exists
 CREATE OR REPLACE FUNCTION enter_details_customer(
     p_user_id INTEGER,
-    p_name VARCHAR(25),
+    p_name VARCHAR,
     p_home_address TEXT
 )
 RETURNS JSON AS $$
@@ -184,7 +184,7 @@ BEGIN
     INTO v_existing_active_order_id, v_existing_active_order_status
     FROM orders
     WHERE customer_id = p_customer_id
-      AND status IN ('open', 'supplier_timer', 'accepted', 'ride_started', 'reached')
+      AND status IN ('open', 'supplier_timer', 'accepted', 'ride_started', 'reached', 'finished')
     ORDER BY created_at DESC
     LIMIT 1;
 
@@ -689,6 +689,7 @@ DECLARE
     v_current_rating DECIMAL(3,2);
     v_total_orders INTEGER;
     v_new_rating DECIMAL(3,2);
+    v_order_record RECORD;
 BEGIN
     PERFORM cleanup_expired_failures();
 
@@ -727,45 +728,24 @@ BEGIN
         );
     END IF;
 
-    -- Get completed-order snapshot and verify ownership in history.
-    SELECT supplier_phone, status, customer_rating, (rated_at IS NOT NULL)
-    INTO v_supplier_phone, v_order_status, v_existing_rating, v_already_processed
-    FROM order_history
+    -- Get finished order and verify ownership in orders.
+    SELECT supplier_id, status
+    INTO v_supplier_id, v_order_status
+    FROM orders
     WHERE order_id = p_order_id
-      AND customer_phone = v_customer_phone;
+      AND customer_id = p_customer_id;
 
     IF NOT FOUND THEN
         RETURN json_build_object(
             'code', 0,
-            'message', 'Completed order snapshot not found for this customer'
+            'message', 'Finished order not found for this customer'
         );
     END IF;
 
-    IF v_order_status != 'completed' THEN
+    IF v_order_status != 'finished' THEN
         RETURN json_build_object(
             'code', 0,
-            'message', 'Only completed orders can be rated. Current status: ' || v_order_status
-        );
-    END IF;
-
-    -- Rating/skip can be submitted only once per order.
-    IF v_already_processed OR v_existing_rating IS NOT NULL THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Rating decision already submitted for this order'
-        );
-    END IF;
-
-    -- Resolve supplier by phone from immutable history snapshot.
-    SELECT user_id INTO v_supplier_id
-    FROM users
-    WHERE phone = v_supplier_phone
-      AND role = 'supplier';
-
-    IF NOT FOUND THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Supplier not found for this order'
+            'message', 'Only finished orders can be rated. Current status: ' || v_order_status
         );
     END IF;
 
@@ -782,21 +762,56 @@ BEGIN
         );
     END IF;
 
+        -- Get all order details for archiving
+        SELECT o.*, u.name AS customer_name, u.phone AS customer_phone,
+            s.name AS supplier_name, s.phone AS supplier_phone,
+            d.name AS driver_name, d.phone AS driver_phone,
+            sp.yard_location AS yard_location
+        INTO v_order_record
+        FROM orders o
+        LEFT JOIN users u ON o.customer_id = u.user_id
+        LEFT JOIN users s ON o.supplier_id = s.user_id
+        LEFT JOIN users d ON o.driver_id = d.user_id
+        LEFT JOIN suppliers sp ON o.supplier_id = sp.user_id
+        WHERE o.order_id = p_order_id;
+
+    -- Rating logic
     IF p_rating IS NULL THEN
         -- Customer skipped rating: keep rating unchanged, increment total_orders.
         UPDATE suppliers
         SET total_orders = total_orders + 1
         WHERE user_id = v_supplier_id;
 
-        UPDATE order_history
-        SET customer_rating = NULL,
-            rated_at = CURRENT_TIMESTAMP
-        WHERE order_id = p_order_id
-          AND customer_phone = v_customer_phone;
+        -- Archive to order_history with null rating
+        INSERT INTO order_history (
+            order_id, customer_name, customer_phone, supplier_name, supplier_phone, driver_name, driver_phone,
+            customer_location, yard_location, price, quantity, status, order_date, reason, customer_rating, rated_at, created_at
+        ) VALUES (
+            v_order_record.order_id,
+            COALESCE(v_order_record.customer_name, ''),
+            COALESCE(v_order_record.customer_phone, ''),
+            v_order_record.supplier_name,
+            v_order_record.supplier_phone,
+            v_order_record.driver_name,
+            v_order_record.driver_phone,
+            v_order_record.delivery_location,
+            COALESCE(v_order_record.yard_location, ''),
+            v_order_record.accepted_price,
+            v_order_record.requested_capacity,
+            'completed',
+            v_order_record.order_confirmed_at,
+            NULL,
+            NULL,
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
+        );
+
+        -- Delete from orders
+        DELETE FROM orders WHERE order_id = p_order_id;
 
         RETURN json_build_object(
             'code', 1,
-            'message', 'Rating skipped. Supplier total orders updated'
+            'message', 'Rating skipped. Supplier total orders updated and order archived.'
         );
     END IF;
 
@@ -809,15 +824,36 @@ BEGIN
         total_orders = total_orders + 1
     WHERE user_id = v_supplier_id;
 
-    UPDATE order_history
-    SET customer_rating = p_rating,
-        rated_at = CURRENT_TIMESTAMP
-    WHERE order_id = p_order_id
-      AND customer_phone = v_customer_phone;
+    -- Archive to order_history with rating
+    INSERT INTO order_history (
+        order_id, customer_name, customer_phone, supplier_name, supplier_phone, driver_name, driver_phone,
+        customer_location, yard_location, price, quantity, status, order_date, reason, customer_rating, rated_at, created_at
+    ) VALUES (
+        v_order_record.order_id,
+        COALESCE(v_order_record.customer_name, ''),
+        COALESCE(v_order_record.customer_phone, ''),
+        v_order_record.supplier_name,
+        v_order_record.supplier_phone,
+        v_order_record.driver_name,
+        v_order_record.driver_phone,
+        v_order_record.delivery_location,
+        COALESCE(v_order_record.yard_location, ''),
+        v_order_record.accepted_price,
+        v_order_record.requested_capacity,
+        'completed',
+        v_order_record.order_confirmed_at,
+        NULL,
+        p_rating,
+        CURRENT_TIMESTAMP,
+        CURRENT_TIMESTAMP
+    );
+
+    -- Delete from orders
+    DELETE FROM orders WHERE order_id = p_order_id;
 
     RETURN json_build_object(
         'code', 1,
-        'message', 'Rating submitted successfully'
+        'message', 'Rating submitted successfully and order archived.'
     );
     
 EXCEPTION
