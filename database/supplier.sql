@@ -811,6 +811,7 @@ CREATE OR REPLACE FUNCTION get_available_drivers_for_supplier(
 RETURNS JSON AS $$
 DECLARE
     v_drivers JSON;
+    v_order_eligible BOOLEAN;
 BEGIN
     -- Validate input
     IF p_supplier_id IS NULL THEN
@@ -824,6 +825,22 @@ BEGIN
         RETURN json_build_object(
             'code', 0,
             'message', 'Order ID cannot be null'
+        );
+    END IF;
+
+    -- Order must belong to supplier and still be within supplier timer window.
+    SELECT EXISTS(
+        SELECT 1 FROM orders
+        WHERE order_id = p_order_id
+          AND supplier_id = p_supplier_id
+          AND status = 'supplier_timer'
+          AND (time_limit_for_supplier IS NULL OR CURRENT_TIMESTAMP <= time_limit_for_supplier)
+    ) INTO v_order_eligible;
+
+    IF NOT v_order_eligible THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier time limit has expired for this order'
         );
     END IF;
     
@@ -882,6 +899,7 @@ DECLARE
     v_driver_belongs BOOLEAN;
     v_order_valid BOOLEAN;
     v_assignment_exists BOOLEAN;
+    v_other_pending_assignment_exists BOOLEAN;
 BEGIN
     -- Validate inputs
     IF p_order_id IS NULL OR p_supplier_id IS NULL OR p_driver_id IS NULL THEN
@@ -904,6 +922,27 @@ BEGIN
             'message', 'Driver does not belong to this supplier'
         );
     END IF;
+
+    -- Cleanup expired pending assignments for this driver.
+    DELETE FROM driver_assignment
+    WHERE driver_id = p_driver_id
+      AND order_rejected = FALSE
+      AND CURRENT_TIMESTAMP > time_limit_for_driver;
+
+    -- A driver can only have one live pending assignment at a time.
+    SELECT EXISTS(
+        SELECT 1 FROM driver_assignment
+        WHERE driver_id = p_driver_id
+          AND order_rejected = FALSE
+          AND CURRENT_TIMESTAMP <= time_limit_for_driver
+    ) INTO v_other_pending_assignment_exists;
+
+    IF v_other_pending_assignment_exists THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver already has a pending assignment'
+        );
+    END IF;
     
     -- Check if driver rejected this order
     SELECT EXISTS(
@@ -921,12 +960,13 @@ BEGIN
     END IF;
     
     -- Check if order is valid for driver assignment
-    -- Must have: correct supplier_id, status='supplier_timer', and driver_id IS NULL
+    -- Must have: correct supplier_id, status='supplier_timer', not expired, and driver_id IS NULL
     SELECT EXISTS(
         SELECT 1 FROM orders
         WHERE order_id = p_order_id
         AND supplier_id = p_supplier_id
         AND status = 'supplier_timer'
+        AND (time_limit_for_supplier IS NULL OR CURRENT_TIMESTAMP <= time_limit_for_supplier)
         AND driver_id IS NULL
     ) INTO v_order_valid;
     
@@ -936,12 +976,6 @@ BEGIN
             'message', 'Order not available for driver assignment'
         );
     END IF;
-    
-    -- Delete old expired assignment (timer ran out, not rejected)
-    DELETE FROM driver_assignment
-    WHERE order_id = p_order_id
-      AND driver_id = p_driver_id
-      AND order_rejected = FALSE;
     
     -- Insert new driver_assignment with fresh 1 minute timer
     INSERT INTO driver_assignment (
@@ -1013,6 +1047,7 @@ BEGIN
         o.accepted_price,
         o.status,
         o.order_confirmed_at,
+        o.time_limit_for_supplier,
         cu.name AS customer_name,
         cu.phone AS customer_phone,
         du.name AS driver_name,
@@ -1031,6 +1066,16 @@ BEGIN
             'message', 'Order not found or does not belong to you'
         );
     END IF;
+
+    -- If supplier timer is expired, this order should no longer be visible as active.
+    IF v_order_record.status = 'supplier_timer'
+       AND v_order_record.time_limit_for_supplier IS NOT NULL
+       AND CURRENT_TIMESTAMP > v_order_record.time_limit_for_supplier THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Supplier time limit has expired for this order'
+        );
+    END IF;
     
     -- Return order details
     RETURN json_build_object(
@@ -1041,6 +1086,7 @@ BEGIN
         'accepted_price', v_order_record.accepted_price,
         'status', v_order_record.status,
         'order_confirmed_at', v_order_record.order_confirmed_at,
+        'time_limit_for_supplier', v_order_record.time_limit_for_supplier,
         'customer_name', v_order_record.customer_name,
         'customer_phone', v_order_record.customer_phone,
         'driver_name', v_order_record.driver_name,
@@ -1102,7 +1148,8 @@ BEGIN
     LEFT JOIN users cu ON o.customer_id = cu.user_id
     LEFT JOIN users du ON o.driver_id = du.user_id
     WHERE o.supplier_id = p_supplier_id
-            AND o.status IN ('supplier_timer', 'accepted', 'ride_started', 'reached');
+            AND o.status IN ('supplier_timer', 'accepted', 'ride_started', 'reached')
+            AND (o.status != 'supplier_timer' OR o.time_limit_for_supplier IS NULL OR CURRENT_TIMESTAMP <= o.time_limit_for_supplier);
     
     RETURN json_build_object(
         'code', 1,

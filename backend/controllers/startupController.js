@@ -76,6 +76,29 @@ const getCustomerUserId = async (req) => {
   };
 };
 
+const getDriverUserId = async (req) => {
+  const auth = await getAuthenticatedUserId(req);
+  if (!auth.ok) {
+    return auth;
+  }
+
+  const roleResult = await query('SELECT role FROM users WHERE user_id = $1', [auth.userId]);
+  const role = roleResult.rows[0]?.role;
+
+  if (role !== 'driver') {
+    return {
+      ok: false,
+      status: 403,
+      message: 'Forbidden: driver access required'
+    };
+  }
+
+  return {
+    ok: true,
+    userId: auth.userId
+  };
+};
+
 
 // On app Start up
 
@@ -1239,6 +1262,7 @@ const listActiveOrdersForSupplier = async (req, res) => {
        LEFT JOIN users du ON o.driver_id = du.user_id
        WHERE o.supplier_id = $1
          AND o.status IN ('supplier_timer', 'accepted', 'ride_started', 'reached')
+         AND (o.status != 'supplier_timer' OR o.time_limit_for_supplier IS NULL OR CURRENT_TIMESTAMP <= o.time_limit_for_supplier)
        ORDER BY o.created_at DESC`,
       [supplierId]
     );
@@ -1288,7 +1312,9 @@ const getActiveOrderDetailsForSupplier = async (req, res) => {
     const response = dbResult.rows[0].result;
 
     if (!response || response.code !== 1) {
-      return res.status(400).json({
+      const msg = (response?.message || '').toString().toLowerCase();
+      const statusCode = msg.includes('supplier time limit has expired') ? 410 : 400;
+      return res.status(statusCode).json({
         success: false,
         message: response?.message || 'Failed to fetch supplier order details'
       });
@@ -1303,6 +1329,280 @@ const getActiveOrderDetailsForSupplier = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to fetch supplier order details',
+      error: error.message
+    });
+  }
+};
+
+// Supplier dashboard: list assignable drivers for one active order.
+const listAssignableDriversForSupplierOrder = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const supplierId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    // Check if supplier time limit has passed
+    const orderCheckResult = await query(
+      'SELECT time_limit_for_supplier FROM orders WHERE order_id = $1 AND supplier_id = $2',
+      [orderId, supplierId]
+    );
+
+    if (orderCheckResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found or does not belong to you'
+      });
+    }
+
+    const timeLimitForSupplier = orderCheckResult.rows[0].time_limit_for_supplier;
+    const now = new Date();
+
+    if (timeLimitForSupplier && new Date(timeLimitForSupplier) < now) {
+      return res.status(410).json({
+        success: false,
+        message: 'Supplier time limit has expired for this order'
+      });
+    }
+
+    const dbResult = await query('SELECT get_available_drivers_for_supplier($1, $2) AS result', [
+      supplierId,
+      orderId
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to fetch assignable drivers'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        order_id: orderId,
+        drivers: Array.isArray(response.drivers) ? response.drivers : []
+      }
+    });
+  } catch (error) {
+    console.error('List assignable drivers error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch assignable drivers',
+      error: error.message
+    });
+  }
+};
+
+// Supplier dashboard: assign one driver to one active order.
+const assignDriverForSupplierOrder = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const supplierId = auth.userId;
+    const orderId = Number(req.params.orderId);
+    const driverId = Number(req.body.driver_id);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    if (!Number.isInteger(driverId) || driverId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'driver_id must be a positive integer'
+      });
+    }
+
+    // Check if supplier time limit has passed
+    const orderCheckResult = await query(
+      'SELECT time_limit_for_supplier FROM orders WHERE order_id = $1 AND supplier_id = $2',
+      [orderId, supplierId]
+    );
+
+    if (orderCheckResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found or does not belong to you'
+      });
+    }
+
+    const timeLimitForSupplier = orderCheckResult.rows[0].time_limit_for_supplier;
+    const now = new Date();
+
+    if (timeLimitForSupplier && new Date(timeLimitForSupplier) < now) {
+      return res.status(410).json({
+        success: false,
+        message: 'Supplier time limit has expired for this order'
+      });
+    }
+
+    const dbResult = await query('SELECT assign_driver_to_order($1, $2, $3) AS result', [
+      orderId,
+      supplierId,
+      driverId
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      const message = (response?.message || '').toString().toLowerCase();
+      const statusCode = message.includes('pending assignment')
+        ? 409
+        : message.includes('not available') || message.includes('does not belong')
+          ? 400
+          : 400;
+
+      return res.status(statusCode).json({
+        success: false,
+        message: response?.message || 'Failed to assign driver'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Driver assigned successfully',
+      data: {
+        order_id: orderId,
+        driver_id: driverId
+      }
+    });
+  } catch (error) {
+    console.error('Assign driver error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to assign driver',
+      error: error.message
+    });
+  }
+};
+
+// Driver flow: accept assigned order.
+const acceptAssignedOrderForDriver = async (req, res) => {
+  try {
+    const auth = await getDriverUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const driverId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    const dbResult = await query('SELECT confirm_order_driver($1, $2) AS result', [
+      driverId,
+      orderId
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      const message = (response?.message || '').toString().toLowerCase();
+      const statusCode = message.includes('expired') ? 410 : 409;
+
+      return res.status(statusCode).json({
+        success: false,
+        message: response?.message || 'Failed to accept assigned order'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Order confirmed successfully',
+      data: {
+        order_id: orderId,
+        next_screen: 'driver_active_order'
+      }
+    });
+  } catch (error) {
+    console.error('Driver accept order error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to accept assigned order',
+      error: error.message
+    });
+  }
+};
+
+// Driver flow: reject assigned order.
+const rejectAssignedOrderForDriver = async (req, res) => {
+  try {
+    const auth = await getDriverUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const driverId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    const dbResult = await query('SELECT reject_order_driver($1, $2) AS result', [
+      driverId,
+      orderId
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      const message = (response?.message || '').toString().toLowerCase();
+      const statusCode = message.includes('expired') ? 410 : 409;
+
+      return res.status(statusCode).json({
+        success: false,
+        message: response?.message || 'Failed to reject assigned order'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Order rejected successfully',
+      data: {
+        order_id: orderId
+      }
+    });
+  } catch (error) {
+    console.error('Driver reject order error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to reject assigned order',
       error: error.message
     });
   }
@@ -1329,5 +1629,9 @@ module.exports = {
   getAvailableOrderDetailsForSupplier,
   placeSupplierBid,
   listActiveOrdersForSupplier,
-  getActiveOrderDetailsForSupplier
+  getActiveOrderDetailsForSupplier,
+  listAssignableDriversForSupplierOrder,
+  assignDriverForSupplierOrder,
+  acceptAssignedOrderForDriver,
+  rejectAssignedOrderForDriver
 };

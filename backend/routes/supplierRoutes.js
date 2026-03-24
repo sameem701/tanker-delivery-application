@@ -19,5 +19,7 @@ router.post('/orders/:orderId/bids', startupController.placeSupplierBid);
 // Supplier dashboard: active assigned orders.
 router.get('/orders/active', startupController.listActiveOrdersForSupplier);
 router.get('/orders/active/:orderId', startupController.getActiveOrderDetailsForSupplier);
+router.get('/orders/active/:orderId/drivers', startupController.listAssignableDriversForSupplierOrder);
+router.post('/orders/active/:orderId/assign-driver', startupController.assignDriverForSupplierOrder);
 
 module.exports = router;
