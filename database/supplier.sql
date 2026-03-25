@@ -507,7 +507,7 @@ CREATE TRIGGER trigger_notify_orders_updated
 -- Returns: JSON object with order details or error
 -- Code: 1=Success, 0=Order not found or not open
 -- ============================================================================
-CREATE OR REPLACE FUNCTION view_order_details(
+CREATE OR REPLACE FUNCTION view_one_available_order_supplier(
     p_order_id INTEGER,
     p_supplier_id INTEGER
 )
@@ -518,17 +518,17 @@ DECLARE
 BEGIN
     -- Validate order_id
     IF p_order_id IS NULL THEN
-        RETURN json_build_object(
+        IF p_order_id IS NULL THEN
             'code', 0,
             'message', 'Order ID cannot be null'
-        );
+                'message', 'Order ID cannot be null'
     END IF;
 
     IF p_supplier_id IS NULL THEN
         RETURN json_build_object(
             'code', 0,
             'message', 'Supplier ID cannot be null'
-        );
+                'message', 'Supplier ID cannot be null'
     END IF;
 
     -- Only suppliers with at least one linked and available driver can view full details.
@@ -543,7 +543,7 @@ BEGIN
         RETURN json_build_object(
             'code', 0,
             'message', 'You need at least one available linked driver to view full order details'
-        );
+                'message', 'You need at least one available linked driver to view full order details'
     END IF;
     
     -- Get order details
@@ -568,14 +568,6 @@ BEGIN
         );
     END IF;
     
-    -- Check if order status is 'open'
-    IF v_order_record.status != 'open' THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Order is not available (status: ' || v_order_record.status || ')'
-        );
-    END IF;
-    
     -- Return order details
     RETURN json_build_object(
         'code', 1,
@@ -590,11 +582,11 @@ BEGIN
 EXCEPTION
     WHEN OTHERS THEN
         RETURN json_build_object(
-            'code', 0,
             'message', 'Failed to fetch order details: ' || SQLERRM
+                'message', 'Failed to fetch order details: ' || SQLERRM
         );
-END;
 $$ LANGUAGE plpgsql;
+    $$ LANGUAGE plpgsql;
 
 
 -- ============================================================================
@@ -1020,7 +1012,7 @@ $$ LANGUAGE plpgsql;
 -- Returns: JSON object with order details
 -- Code: 1=Success with data, 0=Failure/Not authorized
 -- ============================================================================
-CREATE OR REPLACE FUNCTION get_order_details_supplier(
+CREATE OR REPLACE FUNCTION view_one_active_order_supplier(
     p_supplier_id INTEGER,
     p_order_id INTEGER
 )
@@ -1072,16 +1064,6 @@ BEGIN
             'message', 'Order not found or does not belong to you'
         );
     END IF;
-
-    -- If supplier timer is expired, this order should no longer be visible as active.
-    IF v_order_record.status = 'supplier_timer'
-       AND v_order_record.time_limit_for_supplier IS NOT NULL
-       AND CURRENT_TIMESTAMP > v_order_record.time_limit_for_supplier THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Supplier time limit has expired for this order'
-        );
-    END IF;
     
     -- Return order details
     RETURN json_build_object(
@@ -1118,7 +1100,7 @@ $$ LANGUAGE plpgsql;
 --   p_supplier_id: Supplier user_id
 -- Returns: JSON array with active orders
 -- ============================================================================
-CREATE OR REPLACE FUNCTION get_active_orders_supplier(
+CREATE OR REPLACE FUNCTION list_active_orders_supplier(
     p_supplier_id INTEGER
 )
 RETURNS JSON AS $$

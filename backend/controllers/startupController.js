@@ -1,3 +1,177 @@
+// Customer: view order details with timer and status checks
+const getOrderDetailsCustomer = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+
+    const customerId = auth.userId;
+    const orderId = Number(req.params.orderId);
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({ success: false, message: 'orderId must be a positive integer' });
+    }
+
+    // Fetch order status and timer info
+    const orderResult = await query(
+      `SELECT status, supplier_timer_expires_at, completed_at FROM orders WHERE order_id = $1 AND customer_id = $2`,
+      [orderId, customerId]
+    );
+    const order = orderResult.rows[0];
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found or does not belong to you' });
+    }
+
+    // If completed, direct to rating
+    if (order.status === 'completed') {
+      return res.status(409).json({
+        success: false,
+        message: 'Order is completed. Please submit a rating.',
+        next_screen: 'submit_rating'
+      });
+    }
+
+    // Check supplier timer expiry (if in supplier_timer or later)
+    if (order.status === 'supplier_timer' || order.status === 'accepted' || order.status === 'ride_started' || order.status === 'reached') {
+      if (order.supplier_timer_expires_at && new Date(order.supplier_timer_expires_at) < new Date()) {
+        return res.status(410).json({
+          success: false,
+          message: 'Order expired, make a new order.'
+        });
+      }
+    }
+
+    // Only allow viewing from supplier_timer onwards
+    const allowedStatuses = ['supplier_timer', 'accepted', 'ride_started', 'reached'];
+    if (!allowedStatuses.includes(order.status)) {
+      return res.status(403).json({ success: false, message: 'Order not available for viewing at this stage.' });
+    }
+
+    // Fetch details from DB function
+    const dbResult = await query('SELECT get_order_details_customer($1, $2) AS result', [customerId, orderId]);
+    const response = dbResult.rows[0].result;
+    if (!response || response.code !== 1) {
+      return res.status(400).json({ success: false, message: response?.message || 'Failed to fetch order details' });
+    }
+    return res.status(200).json({ success: true, data: response });
+  } catch (error) {
+    console.error('Get order details (customer) error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch order details', error: error.message });
+  }
+};
+
+// Customer: view minimum details for an open order
+const orderOpen = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+
+    const customerId = auth.userId;
+    const orderId = Number(req.params.orderId);
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({ success: false, message: 'orderId must be a positive integer' });
+    }
+
+    const orderResult = await query(
+      `SELECT status FROM orders WHERE order_id = $1 AND customer_id = $2`,
+      [orderId, customerId]
+    );
+
+    const order = orderResult.rows[0];
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found or does not belong to you' });
+    }
+
+    if (order.status !== 'open') {
+      return res.status(409).json({ success: false, message: 'Order is no longer open' });
+    }
+
+    const dbResult = await query('SELECT orderOpen($1, $2) AS result', [customerId, orderId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      return res.status(400).json({ success: false, message: response?.message || 'Failed to fetch open order details' });
+    }
+
+    return res.status(200).json({ success: true, data: response });
+  } catch (error) {
+    console.error('Get open order details error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch order details', error: error.message });
+  }
+};
+
+// Driver: view order details with timer and status checks
+const getOrderDetailsDriver = async (req, res) => {
+  try {
+    const auth = await getDriverUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+
+    const driverId = auth.userId;
+    const orderId = Number(req.params.orderId);
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({ success: false, message: 'orderId must be a positive integer' });
+    }
+
+    // Fetch order status and timer info
+    const orderResult = await query(
+      `SELECT 
+        o.status, 
+        o.time_limit_for_supplier, 
+        da.time_limit_for_driver, 
+        o.completed_at 
+      FROM orders o 
+      LEFT JOIN driver_assignment da ON o.order_id = da.order_id AND da.driver_id = $2
+      WHERE o.order_id = $1 AND (o.driver_id = $2 OR da.driver_id = $2)`,
+      [orderId, driverId]
+    );
+    const order = orderResult.rows[0];
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found or not assigned to you' });
+    }
+
+    // If completed, do not show details
+    if (order.status === 'completed' || order.completed_at) {
+      return res.status(409).json({
+        success: false,
+        message: 'Order is completed.'
+      });
+    }
+
+    // Check timer expiry
+    const now = new Date();
+    if (order.status === 'supplier_timer') {
+      if (order.time_limit_for_supplier && new Date(order.time_limit_for_supplier) < now) {
+        return res.status(410).json({ success: false, message: 'Supplier time limit has expired.' });
+      }
+      if (order.time_limit_for_driver && new Date(order.time_limit_for_driver) < now) {
+        return res.status(410).json({ success: false, message: 'Driver assignment time limit has expired.' });
+      }
+    }
+
+    // Only allow viewing from supplier_timer onwards
+    const allowedStatuses = ['supplier_timer', 'accepted', 'ride_started', 'reached'];
+    if (!allowedStatuses.includes(order.status)) {
+      return res.status(403).json({ success: false, message: 'Order not available for viewing at this stage.' });
+    }
+
+    // Fetch details from DB function
+    const dbResult = await query('SELECT get_order_details_driver($1, $2) AS result', [driverId, orderId]);
+    const response = dbResult.rows[0].result;
+    if (!response || response.code !== 1) {
+      return res.status(400).json({ success: false, message: response?.message || 'Failed to fetch order details' });
+    }
+    return res.status(200).json({ success: true, data: response });
+  } catch (error) {
+    console.error('Get order details (driver) error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch order details', error: error.message });
+  }
+};
+
+
 const { query } = require('../config/database');
 
 const getAuthenticatedUserId = async (req) => {
@@ -1170,7 +1344,7 @@ const listAvailableOrdersForSupplier = async (req, res) => {
 };
 
 // Supplier marketplace: view details of one open order.
-const getAvailableOrderDetailsForSupplier = async (req, res) => {
+const viewOneAvailableOrderSupplier = async (req, res) => {
   try {
     const auth = await getSupplierUserId(req);
     if (!auth.ok) {
@@ -1188,7 +1362,21 @@ const getAvailableOrderDetailsForSupplier = async (req, res) => {
       });
     }
 
-    const dbResult = await query('SELECT view_order_details($1, $2) AS result', [orderId, auth.userId]);
+    const orderResult = await query(
+      `SELECT status FROM orders WHERE order_id = $1`,
+      [orderId]
+    );
+    const order = orderResult.rows[0];
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    if (order.status !== 'open') {
+      return res.status(403).json({ success: false, message: `Order is not available (status: ${order.status})` });
+    }
+
+    const dbResult = await query('SELECT view_one_available_order_supplier($1, $2) AS result', [orderId, auth.userId]);
     const response = dbResult.rows[0].result;
 
     if (!response || response.code !== 1) {
@@ -1305,7 +1493,7 @@ const placeSupplierBid = async (req, res) => {
 };
 
 // Supplier dashboard: view all active orders assigned to supplier.
-const listActiveOrdersForSupplier = async (req, res) => {
+const listActiveOrdersSupplier = async (req, res) => {
   try {
     const auth = await getSupplierUserId(req);
     if (!auth.ok) {
@@ -1316,7 +1504,7 @@ const listActiveOrdersForSupplier = async (req, res) => {
     }
 
     const supplierId = auth.userId;
-    const dbResult = await query('SELECT get_active_orders_supplier($1) AS result', [supplierId]);
+    const dbResult = await query('SELECT list_active_orders_supplier($1) AS result', [supplierId]);
     const response = dbResult.rows[0].result;
 
     if (!response || response.code !== 1) {
@@ -1344,7 +1532,7 @@ const listActiveOrdersForSupplier = async (req, res) => {
 };
 
 // Supplier dashboard: view details for one active/assigned order.
-const getActiveOrderDetailsForSupplier = async (req, res) => {
+const viewOneActiveOrderSupplier = async (req, res) => {
   try {
     const auth = await getSupplierUserId(req);
     if (!auth.ok) {
@@ -1364,7 +1552,27 @@ const getActiveOrderDetailsForSupplier = async (req, res) => {
       });
     }
 
-    const dbResult = await query('SELECT get_order_details_supplier($1, $2) AS result', [
+    const orderResult = await query(
+      `SELECT status, time_limit_for_supplier FROM orders WHERE order_id = $1 AND supplier_id = $2`,
+      [orderId, supplierId]
+    );
+    const order = orderResult.rows[0];
+    
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found or does not belong to you' });
+    }
+
+    if (!['supplier_timer', 'accepted', 'ride_started', 'reached'].includes(order.status)) {
+      return res.status(409).json({ success: false, message: `Order is no longer active (status: ${order.status})` });
+    }
+
+    if (order.status === 'supplier_timer') {
+      if (order.time_limit_for_supplier && new Date(order.time_limit_for_supplier) < new Date()) {
+        return res.status(410).json({ success: false, message: 'Supplier time limit has expired for this order' });
+      }
+    }
+
+    const dbResult = await query('SELECT view_one_active_order_supplier($1, $2) AS result', [
       supplierId,
       orderId
     ]);
@@ -1372,7 +1580,8 @@ const getActiveOrderDetailsForSupplier = async (req, res) => {
 
     if (!response || response.code !== 1) {
       const msg = (response?.message || '').toString().toLowerCase();
-      const statusCode = msg.includes('supplier time limit has expired') ? 410 : 400;
+      const statusCode = msg.includes('supplier time limit has expired') ? 410 :
+        msg.includes('no longer active') ? 409 : 400;
       return res.status(statusCode).json({
         success: false,
         message: response?.message || 'Failed to fetch supplier order details'
@@ -1538,7 +1747,7 @@ const acceptAssignedOrderForDriver = async (req, res) => {
       });
     }
 
-    const dbResult = await query('SELECT confirm_order_driver($1, $2) AS result', [
+    const dbResult = await query('SELECT accept_order_driver($1, $2) AS result', [
       driverId,
       orderId
     ]);
@@ -1773,7 +1982,250 @@ const finishOrderForDriver = async (req, res) => {
   }
 };
 
+
+
+
+
+// Cancel order: customer
+const cancelOrderCustomer = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    // Explicit role check
+    const roleResult = await query('SELECT role FROM users WHERE user_id = $1', [auth.userId]);
+    const role = roleResult.rows[0]?.role;
+    if (role !== 'customer') {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden: customer access required'
+      });
+    }
+
+    const customerId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    // Enforce allowed states for customer cancellation
+    const allowedStates = ['open', 'supplier_timer', 'accepted', 'ride_started', 'reached'];
+    const orderResult = await query('SELECT status FROM orders WHERE order_id = $1 AND customer_id = $2', [orderId, customerId]);
+    const order = orderResult.rows[0];
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found or does not belong to you'
+      });
+    }
+    if (!allowedStates.includes(order.status)) {
+      return res.status(409).json({
+        success: false,
+        message: `Order cannot be cancelled in state: ${order.status}`
+      });
+    }
+
+    const dbResult = await query('SELECT cancel_order($1, $2, $3) AS result', [orderId, customerId, 'customer']);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      const msg = (response?.message || '').toString().toLowerCase();
+      const statusCode = msg.includes('already completed') ? 409 : 400;
+      return res.status(statusCode).json({
+        success: false,
+        message: response?.message || 'Failed to cancel order'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Order cancelled successfully',
+      data: {
+        order_id: orderId,
+        status: 'cancelled'
+      }
+    });
+  } catch (error) {
+    console.error('Cancel order (customer) error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to cancel order',
+      error: error.message
+    });
+  }
+};
+
+// Cancel order: supplier
+const cancelOrderSupplier = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    // Explicit role check
+    const roleResult = await query('SELECT role FROM users WHERE user_id = $1', [auth.userId]);
+    const role = roleResult.rows[0]?.role;
+    if (role !== 'supplier') {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden: supplier access required'
+      });
+    }
+
+    const supplierId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    // Enforce allowed states for supplier cancellation
+    const allowedStates = ['supplier_timer', 'accepted', 'ride_started', 'reached'];
+    const orderResult = await query('SELECT status, supplier_id FROM orders WHERE order_id = $1', [orderId]);
+    const order = orderResult.rows[0];
+    if (!order || order.supplier_id !== supplierId) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found or not assigned to you'
+      });
+    }
+    if (!allowedStates.includes(order.status)) {
+      return res.status(409).json({
+        success: false,
+        message: `Order cannot be cancelled in state: ${order.status}`
+      });
+    }
+
+    const dbResult = await query('SELECT cancel_order($1, $2, $3) AS result', [orderId, supplierId, 'supplier']);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      const msg = (response?.message || '').toString().toLowerCase();
+      const statusCode = msg.includes('already completed') ? 409 : 400;
+      return res.status(statusCode).json({
+        success: false,
+        message: response?.message || 'Failed to cancel order'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Order cancelled successfully',
+      data: {
+        order_id: orderId,
+        status: 'cancelled'
+      }
+    });
+  } catch (error) {
+    console.error('Cancel order (supplier) error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to cancel order',
+      error: error.message
+    });
+  }
+};
+
+// Cancel order: driver
+const cancelOrderDriver = async (req, res) => {
+  try {
+    const auth = await getDriverUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    // Explicit role check
+    const roleResult = await query('SELECT role FROM users WHERE user_id = $1', [auth.userId]);
+    const role = roleResult.rows[0]?.role;
+    if (role !== 'driver') {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden: driver access required'
+      });
+    }
+
+    const driverId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    // Enforce allowed states for driver cancellation
+    const allowedStates = ['accepted', 'ride_started', 'reached'];
+    const orderResult = await query('SELECT status, driver_id FROM orders WHERE order_id = $1', [orderId]);
+    const order = orderResult.rows[0];
+    if (!order || order.driver_id !== driverId) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found or not assigned to you'
+      });
+    }
+    if (!allowedStates.includes(order.status)) {
+      return res.status(409).json({
+        success: false,
+        message: `Order cannot be cancelled in state: ${order.status}`
+      });
+    }
+
+    const dbResult = await query('SELECT cancel_order($1, $2, $3) AS result', [orderId, driverId, 'driver']);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      const msg = (response?.message || '').toString().toLowerCase();
+      const statusCode = msg.includes('already completed') ? 409 : 400;
+      return res.status(statusCode).json({
+        success: false,
+        message: response?.message || 'Failed to cancel order'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Order cancelled successfully',
+      data: {
+        order_id: orderId,
+        status: 'cancelled'
+      }
+    });
+  } catch (error) {
+    console.error('Cancel order (driver) error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to cancel order',
+      error: error.message
+    });
+  }
+};
+
+
+
 module.exports = {
+  getOrderDetailsCustomer,
+  orderOpen,
+  getOrderDetailsDriver,
   appStartup,
   enterNumber,
   storeOTP,
@@ -1792,15 +2244,22 @@ module.exports = {
   acceptSupplierBidForCustomer,
   submitOrderRatingForCustomer,
   listAvailableOrdersForSupplier,
-  getAvailableOrderDetailsForSupplier,
+  viewOneAvailableOrderSupplier,
   placeSupplierBid,
-  listActiveOrdersForSupplier,
-  getActiveOrderDetailsForSupplier,
+  listActiveOrdersSupplier,
+  viewOneActiveOrderSupplier,
   listAssignableDriversForSupplierOrder,
   assignDriverForSupplierOrder,
   acceptAssignedOrderForDriver,
   rejectAssignedOrderForDriver,
   startRideForDriver,
   markOrderReachedForDriver,
-  finishOrderForDriver
+  finishOrderForDriver,
+  cancelOrderCustomer,
+  cancelOrderSupplier,
+  cancelOrderDriver
 };
+
+
+
+

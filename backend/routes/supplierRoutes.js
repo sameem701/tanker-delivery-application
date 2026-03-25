@@ -13,13 +13,16 @@ router.get('/supplierdriverready', startupController.getSupplierDriverReadiness)
 
 // Supplier marketplace: available orders, details, and bidding.
 router.get('/orders/available', startupController.listAvailableOrdersForSupplier);
-router.get('/orders/available/:orderId', startupController.getAvailableOrderDetailsForSupplier);
+router.get('/orders/available/:orderId', startupController.viewOneAvailableOrderSupplier);
 router.post('/orders/:orderId/bids', startupController.placeSupplierBid);
 
 // Supplier dashboard: active assigned orders.
-router.get('/orders/active', startupController.listActiveOrdersForSupplier);
-router.get('/orders/active/:orderId', startupController.getActiveOrderDetailsForSupplier);
+router.get('/orders/active', startupController.listActiveOrdersSupplier);
+router.get('/orders/active/:orderId', startupController.viewOneActiveOrderSupplier);
 router.get('/orders/active/:orderId/drivers', startupController.listAssignableDriversForSupplierOrder);
+
+// Cancel order (supplier)
+router.post('/orders/active/:orderId/cancel', startupController.cancelOrderSupplier);
 router.post('/orders/active/:orderId/assign-driver', startupController.assignDriverForSupplierOrder);
 
 module.exports = router;

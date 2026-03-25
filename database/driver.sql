@@ -148,7 +148,7 @@ CREATE TRIGGER trigger_relink_driver_on_session_insert
 
 
 -- ============================================================================
--- FUNCTION: confirm_order_driver
+-- FUNCTION: accept_order_driver
 -- ============================================================================
 -- Purpose: Driver confirms acceptance of an assigned order
 --          Uses race-safe UPDATE to prevent multiple drivers accepting same order
@@ -159,7 +159,7 @@ CREATE TRIGGER trigger_relink_driver_on_session_insert
 -- Returns: JSON object with code field
 -- Code: 1=Success, 0=Failure
 -- ============================================================================
-CREATE OR REPLACE FUNCTION confirm_order_driver(
+CREATE OR REPLACE FUNCTION accept_order_driver(
     p_driver_id INTEGER,
     p_order_id INTEGER
 )
@@ -353,8 +353,6 @@ RETURNS JSON AS $$
 DECLARE
     v_order_record RECORD;
 BEGIN
-    PERFORM cleanup_expired_failures();
-
     -- Validate inputs
     IF p_driver_id IS NULL THEN
         RETURN json_build_object(
@@ -371,6 +369,7 @@ BEGIN
     END IF;
     
     -- Get order details with customer info
+    -- Join with driver_assignment to allow pending drivers to view invites
     SELECT 
         o.order_id,
         o.delivery_location,
@@ -382,10 +381,11 @@ BEGIN
     INTO v_order_record
     FROM orders o
     LEFT JOIN users cu ON o.customer_id = cu.user_id
+    LEFT JOIN driver_assignment da ON o.order_id = da.order_id AND da.driver_id = p_driver_id
     WHERE o.order_id = p_order_id
-      AND o.driver_id = p_driver_id;
+      AND (o.driver_id = p_driver_id OR da.driver_id = p_driver_id);
     
-    -- Check if order exists and belongs to driver
+    -- Check if order exists and belongs/assigned to driver
     IF NOT FOUND THEN
         RETURN json_build_object(
             'code', 0,

@@ -358,6 +358,10 @@ BEGIN
             'message', 'Order is not available for bid acceptance'
         );
     END IF;
+
+    -- Clear all pending bids for this order as it is no longer open
+    DELETE FROM bids
+    WHERE order_id = v_bid_record.order_id;
     
     RETURN json_build_object(
         'code', 1,
@@ -550,10 +554,6 @@ BEGIN
       AND customer_id = p_customer_id
       AND status = 'open';
 
-    -- Customer changed expected price; previous supplier bids are no longer valid.
-    DELETE FROM bids
-    WHERE order_id = p_order_id;
-
     RETURN json_build_object(
         'code', 1,
         'message', 'Order bid updated successfully',
@@ -570,6 +570,52 @@ EXCEPTION
 END;
 $$ LANGUAGE plpgsql;
 
+
+-- ============================================================================
+-- FUNCTION: Get open order details for customer
+-- ============================================================================
+CREATE OR REPLACE FUNCTION orderOpen(
+    p_customer_id INTEGER,
+    p_order_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_record RECORD;
+BEGIN
+    IF p_customer_id IS NULL OR p_order_id IS NULL THEN
+        RETURN json_build_object('code', 0, 'message', 'Customer ID and Order ID cannot be null');
+    END IF;
+
+    SELECT 
+        order_id,
+        delivery_location,
+        requested_capacity,
+        customer_bid_price,
+        status,
+        created_at
+    INTO v_order_record
+    FROM orders
+    WHERE order_id = p_order_id
+      AND customer_id = p_customer_id;
+
+    IF NOT FOUND THEN
+        RETURN json_build_object('code', 0, 'message', 'Order not found or does not belong to you');
+    END IF;
+
+    RETURN json_build_object(
+        'code', 1,
+        'order_id', v_order_record.order_id,
+        'delivery_location', v_order_record.delivery_location,
+        'quantity', v_order_record.requested_capacity,
+        'customer_bid_price', v_order_record.customer_bid_price,
+        'status', v_order_record.status,
+        'created_at', v_order_record.created_at
+    );
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object('code', 0, 'message', 'Failed to get open order details: ' || SQLERRM);
+END;
+$$ LANGUAGE plpgsql;
 
 -- ============================================================================
 -- FUNCTION: Get order details for customer
