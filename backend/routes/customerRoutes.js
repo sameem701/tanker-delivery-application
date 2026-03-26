@@ -17,5 +17,7 @@ router.get('/orders/:orderId/open', startupController.orderOpen);
 router.get('/orders/:orderId/details', startupController.getOrderDetailsCustomer);
 router.post('/orders/:orderId/cancel', startupController.cancelOrderCustomer);
 router.post('/orders/:orderId/rating', startupController.submitOrderRatingForCustomer);
+router.get('/history', startupController.viewPastOrders);
+router.get('/history/:orderId', startupController.viewPastOrderDetailsCustomer);
 
 module.exports = router;

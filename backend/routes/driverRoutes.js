@@ -13,5 +13,7 @@ router.post('/orders/:orderId/reached', startupController.markOrderReachedForDri
 // Cancel order (driver)
 router.post('/orders/:orderId/cancel', startupController.cancelOrderDriver);
 router.post('/orders/:orderId/finish', startupController.finishOrderForDriver);
+router.get('/history', startupController.viewPastOrders);
+router.get('/history/:orderId', startupController.viewPastOrderDetailsDriver);
 
 module.exports = router;

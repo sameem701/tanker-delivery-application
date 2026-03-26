@@ -1557,7 +1557,7 @@ const viewOneActiveOrderSupplier = async (req, res) => {
       [orderId, supplierId]
     );
     const order = orderResult.rows[0];
-    
+
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found or does not belong to you' });
     }
@@ -2220,6 +2220,170 @@ const cancelOrderDriver = async (req, res) => {
   }
 };
 
+// View past order history for any role
+const viewPastOrders = async (req, res) => {
+  try {
+    const auth = await getAuthenticatedUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        sucess: false,
+        message: auth.message
+      });
+    }
+
+    const userId = auth.userId;
+    const dbResult = await query('SELECT view_past_orders($1) AS result', [userId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code == 0) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to fetch order history'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        total_orders: Array.isArray(response) ? response.length : 0,
+        orders: Array.isArray(response) ? response : []
+      }
+    });
+  }
+  catch (error) {
+    console.error('View past orders error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order history',
+      error: error.message
+    });
+  }
+};
+
+
+const viewPastOrderDetailsSupplier = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+
+    const supplierId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    const dbResult = await query('SELECT view_past_order_details_supplier($1, $2) AS result', [supplierId, orderId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code === 0) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to fetch order details'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: response.order
+    });
+  } catch (error) {
+    console.error('View past order details (supplier) error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order details',
+      error: error.message
+    });
+  }
+};
+
+
+const viewPastOrderDetailsCustomer = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+
+    const customerId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    const dbResult = await query('SELECT view_past_order_details_customer($1, $2) AS result', [customerId, orderId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code === 0) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to fetch order details'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: response.order
+    });
+  } catch (error) {
+    console.error('View past order details (customer) error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order details',
+      error: error.message
+    });
+  }
+};
+
+const viewPastOrderDetailsDriver = async (req, res) => {
+  try {
+    const auth = await getDriverUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+
+    const driverId = auth.userId;
+    const orderId = Number(req.params.orderId);
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId must be a positive integer'
+      });
+    }
+
+    const dbResult = await query('SELECT view_past_order_details_driver($1, $2) AS result', [driverId, orderId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code === 0) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to fetch order details'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: response.order
+    });
+  } catch (error) {
+    console.error('View past order details (driver) error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order details',
+      error: error.message
+    });
+  }
+};
 
 
 module.exports = {
@@ -2257,7 +2421,11 @@ module.exports = {
   finishOrderForDriver,
   cancelOrderCustomer,
   cancelOrderSupplier,
-  cancelOrderDriver
+  cancelOrderDriver,
+  viewPastOrders,
+  viewPastOrderDetailsSupplier,
+  viewPastOrderDetailsCustomer,
+  viewPastOrderDetailsDriver
 };
 
 

@@ -799,10 +799,7 @@ BEGIN
                 'price', price,
                 'quantity', quantity,
                 'status', status,
-                'order_date', order_date,
-                'customer_name', customer_name,
-                'supplier_name', supplier_name,
-                'driver_name', driver_name
+                'order_date', order_date
             ) ORDER BY order_date DESC
         ) INTO v_orders
         FROM order_history
@@ -815,10 +812,7 @@ BEGIN
                 'price', price,
                 'quantity', quantity,
                 'status', status,
-                'order_date', order_date,
-                'customer_name', customer_name,
-                'supplier_name', supplier_name,
-                'driver_name', driver_name
+                'order_date', order_date
             ) ORDER BY order_date DESC
         ) INTO v_orders
         FROM order_history
@@ -831,10 +825,7 @@ BEGIN
                 'price', price,
                 'quantity', quantity,
                 'status', status,
-                'order_date', order_date,
-                'customer_name', customer_name,
-                'supplier_name', supplier_name,
-                'driver_name', driver_name
+                'order_date', order_date
             ) ORDER BY order_date DESC
         ) INTO v_orders
         FROM order_history
