@@ -15,5 +15,7 @@ router.post('/orders/:orderId/cancel', startupController.cancelOrderDriver);
 router.post('/orders/:orderId/finish', startupController.finishOrderForDriver);
 router.get('/history', startupController.viewPastOrders);
 router.get('/history/:orderId', startupController.viewPastOrderDetailsDriver);
+router.post('/logout', startupController.logoutDriver);
+router.delete('/', startupController.deleteDriverAccount);
 
 module.exports = router;

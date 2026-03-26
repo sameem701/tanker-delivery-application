@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS ORDERS (
     ORDER_ID SERIAL PRIMARY KEY,
     CUSTOMER_ID INTEGER NOT NULL REFERENCES USERS(USER_ID) ON DELETE CASCADE,
     SUPPLIER_ID INTEGER REFERENCES SUPPLIERS(USER_ID) ON DELETE CASCADE,
-    DRIVER_ID INTEGER REFERENCES USERS(USER_ID)ON DELETE CASCADE,
+    DRIVER_ID INTEGER REFERENCES USERS(USER_ID) ON DELETE CASCADE,
     DELIVERY_LOCATION TEXT NOT NULL,
     REQUESTED_CAPACITY NUMERIC(5,0) NOT NULL CHECK (REQUESTED_CAPACITY > 0),
     CUSTOMER_BID_PRICE NUMERIC(10,0) NOT NULL CHECK (CUSTOMER_BID_PRICE > 0),
@@ -123,6 +123,7 @@ ON bids(order_id, supplier_id);
 CREATE TABLE IF NOT EXISTS ORDER_HISTORY (
     HISTORY_ID SERIAL PRIMARY KEY,
     ORDER_ID INTEGER NOT NULL,
+    SUPPLIER_ID INTEGER REFERENCES SUPPLIERS(USER_ID) ON DELETE SET NULL,
     CUSTOMER_NAME TEXT NOT NULL,
     CUSTOMER_PHONE VARCHAR(20) NOT NULL,
     SUPPLIER_NAME TEXT,
@@ -676,6 +677,7 @@ BEGIN
         -- Insert into order_history
         INSERT INTO order_history (
             order_id,
+            supplier_id,
             customer_name,
             customer_phone,
             supplier_name,
@@ -692,6 +694,7 @@ BEGIN
             created_at
         ) VALUES (
             v_order_record.order_id,
+            v_order_record.supplier_id,
             COALESCE(v_customer_name, ''),
             COALESCE(v_customer_phone, ''),
             v_supplier_name,

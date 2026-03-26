@@ -1226,3 +1226,155 @@ EXCEPTION
         );
 END;
 $$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Logout supplier
+-- ============================================================================
+-- Purpose: Safely log out a supplier. 
+--          1. Blocks logout if there is an active delivery or pending decision.
+--             (supplier_timer, accepted, ride_started, reached).
+--          2. Retracts all pending bids on open orders.
+--          3. Deletes the session token.
+-- Parameters:
+--   p_user_id: Supplier user_id
+--   p_session_token: The session token to delete
+-- Returns: JSON object with status
+-- ============================================================================
+CREATE OR REPLACE FUNCTION logout_supplier(
+    p_user_id INTEGER,
+    p_session_token VARCHAR(255)
+)
+RETURNS JSON AS $$
+DECLARE
+    v_active_order_exists BOOLEAN;
+BEGIN
+    -- 1. Check for active orders
+    -- This covers the 1-minute window (supplier_timer) AND active deliveries (accepted to reached).
+    -- We ALLOW logout if the order is 'finished' (waiting for customer rating).
+    SELECT EXISTS(
+        SELECT 1 FROM orders 
+        WHERE supplier_id = p_user_id 
+        AND status IN ('supplier_timer', 'accepted', 'ride_started', 'reached')
+    ) INTO v_active_order_exists;
+
+    IF v_active_order_exists THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Cannot logout while you have a delivery in progress or a pending order decision.'
+        );
+    END IF;
+
+    -- 2. Handle active bids: retract them
+    DELETE FROM bids
+    WHERE supplier_id = p_user_id;
+
+    -- 3. Delete the session
+    DELETE FROM sessions 
+    WHERE token = p_session_token AND user_id = p_user_id;
+
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Logged out successfully. All pending bids retracted.'
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Logout failed: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Delete supplier account
+-- ============================================================================
+-- Purpose: Permanently delete a supplier account. 
+--          1. Blocks deletion if there is a delivery in progress.
+--          2. Archives 'finished' orders into order_history.
+--          3. Logs out all currently linked drivers (deletes their sessions).
+--          4. Retracts all active bids.
+--          5. Deletes the user record (cascading to profile and driver links).
+-- Parameters:
+--   p_user_id: Supplier user_id
+-- Returns: JSON object with status
+-- ============================================================================
+CREATE OR REPLACE FUNCTION delete_supplier_account(
+    p_user_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_active_order_exists BOOLEAN;
+    v_order_record RECORD;
+BEGIN
+    -- 1. Check for active orders that MUST be physically completed first
+    SELECT EXISTS(
+        SELECT 1 FROM orders 
+        WHERE supplier_id = p_user_id 
+        AND status IN ('supplier_timer', 'accepted', 'ride_started', 'reached')
+    ) INTO v_active_order_exists;
+
+    IF v_active_order_exists THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Cannot delete account while there is a delivery in progress. Please wait for completion.'
+        );
+    END IF;
+
+    -- 2. Snapshot any 'finished' orders to history
+    FOR v_order_record IN (
+        SELECT o.*, u.name AS customer_name, u.phone AS customer_phone,
+               s.name AS supplier_name, s.phone AS supplier_phone,
+               d.name AS driver_name, d.phone AS driver_phone,
+               sp.yard_location AS yard_location
+        FROM orders o
+        LEFT JOIN users u ON o.customer_id = u.user_id
+        LEFT JOIN users s ON o.supplier_id = s.user_id
+        LEFT JOIN users d ON o.driver_id = d.user_id
+        LEFT JOIN suppliers sp ON o.supplier_id = sp.user_id
+        WHERE o.supplier_id = p_user_id AND o.status = 'finished'
+    ) LOOP
+        INSERT INTO order_history (
+            order_id, supplier_id, customer_name, customer_phone, supplier_name, supplier_phone, driver_name, driver_phone,
+            customer_location, yard_location, price, quantity, status, order_date, reason, customer_rating, rated_at, created_at
+        ) VALUES (
+            v_order_record.order_id, v_order_record.supplier_id,
+            COALESCE(v_order_record.customer_name, ''),
+            COALESCE(v_order_record.customer_phone, ''),
+            v_order_record.supplier_name, v_order_record.supplier_phone,
+            v_order_record.driver_name, v_order_record.driver_phone,
+            v_order_record.delivery_location, COALESCE(v_order_record.yard_location, ''),
+            v_order_record.accepted_price, v_order_record.requested_capacity,
+            'completed', v_order_record.order_confirmed_at,
+            NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+        
+        DELETE FROM orders WHERE order_id = v_order_record.order_id;
+    END LOOP;
+
+    -- 3. Cascading Logout: Remove sessions for all linked drivers
+    DELETE FROM sessions WHERE user_id IN (
+        SELECT driver_user_id FROM supplier_drivers WHERE supplier_id = p_user_id
+    );
+
+    -- 4. Retract all active bids
+    DELETE FROM bids WHERE supplier_id = p_user_id;
+
+    -- 5. Delete the user (cascades to supplier profile, driver links, and tokens)
+    DELETE FROM users WHERE user_id = p_user_id;
+
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Account deleted successfully. All linked drivers have been logged out.'
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Account deletion failed: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;

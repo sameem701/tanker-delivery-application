@@ -727,15 +727,13 @@ CREATE OR REPLACE FUNCTION submit_rating(
 RETURNS JSON AS $$
 DECLARE
     v_customer_phone VARCHAR(20);
-    v_supplier_phone VARCHAR(20);
     v_supplier_id INTEGER;
     v_order_status VARCHAR(20);
-    v_existing_rating INTEGER;
-    v_already_processed BOOLEAN;
     v_current_rating DECIMAL(3,2);
     v_total_orders INTEGER;
     v_new_rating DECIMAL(3,2);
     v_order_record RECORD;
+    v_already_archived BOOLEAN := FALSE;
 BEGIN
     PERFORM cleanup_expired_failures();
 
@@ -774,140 +772,102 @@ BEGIN
         );
     END IF;
 
-    -- Get finished order and verify ownership in orders.
-    SELECT supplier_id, status
-    INTO v_supplier_id, v_order_status
+    -- 1. Try to find the order in active orders
+    SELECT * INTO v_order_record
     FROM orders
-    WHERE order_id = p_order_id
-      AND customer_id = p_customer_id;
+    WHERE order_id = p_order_id AND customer_id = p_customer_id;
 
     IF NOT FOUND THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Finished order not found for this customer'
-        );
+        -- 2. Fallback: check if it was already archived 
+        -- (e.g. by a driver who deleted their account)
+        SELECT supplier_id, customer_rating 
+        INTO v_supplier_id, v_new_rating -- reuse v_new_rating for check
+        FROM order_history 
+        WHERE order_id = p_order_id AND customer_phone = v_customer_phone;
+
+        IF NOT FOUND THEN
+            RETURN json_build_object('code', 0, 'message', 'Order not found in active orders or history');
+        END IF;
+
+        IF v_new_rating IS NOT NULL THEN
+            RETURN json_build_object('code', 0, 'message', 'This order has already been rated');
+        END IF;
+
+        v_already_archived := TRUE;
+    ELSE
+        -- Verify status if in active orders
+        IF v_order_record.status != 'finished' THEN
+            RETURN json_build_object('code', 0, 'message', 'Only finished orders can be rated. Current status: ' || v_order_record.status);
+        END IF;
+        v_supplier_id := v_order_record.supplier_id;
     END IF;
 
-    IF v_order_status != 'finished' THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Only finished orders can be rated. Current status: ' || v_order_status
-        );
-    END IF;
-
-    -- Get supplier's current rating and total_orders
+    -- 3. Update Supplier Rating
     SELECT rating, total_orders INTO v_current_rating, v_total_orders
-    FROM suppliers
-    WHERE user_id = v_supplier_id
-    FOR UPDATE;
+    FROM suppliers WHERE user_id = v_supplier_id FOR UPDATE;
 
-    IF NOT FOUND THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Supplier profile not found for this order'
-        );
+    IF FOUND THEN
+        IF p_rating IS NOT NULL THEN
+            -- Update weighted average
+            v_new_rating := ((COALESCE(v_current_rating, 0) * COALESCE(v_total_orders, 0)) + COALESCE(p_rating, 0))
+                            / (COALESCE(v_total_orders, 0) + 1);
+            
+            UPDATE suppliers
+            SET rating = v_new_rating, total_orders = total_orders + 1
+            WHERE user_id = v_supplier_id;
+        ELSE
+            -- Just increment total_orders for skip
+            UPDATE suppliers
+            SET total_orders = total_orders + 1
+            WHERE user_id = v_supplier_id;
+        END IF;
     END IF;
 
-        -- Get all order details for archiving
-        SELECT o.*, u.name AS customer_name, u.phone AS customer_phone,
-            s.name AS supplier_name, s.phone AS supplier_phone,
-            d.name AS driver_name, d.phone AS driver_phone,
-            sp.yard_location AS yard_location
-        INTO v_order_record
-        FROM orders o
-        LEFT JOIN users u ON o.customer_id = u.user_id
-        LEFT JOIN users s ON o.supplier_id = s.user_id
-        LEFT JOIN users d ON o.driver_id = d.user_id
-        LEFT JOIN suppliers sp ON o.supplier_id = sp.user_id
-        WHERE o.order_id = p_order_id;
+    -- 4. Finalize History
+    IF v_already_archived THEN
+        UPDATE order_history 
+        SET customer_rating = p_rating, rated_at = CURRENT_TIMESTAMP
+        WHERE order_id = p_order_id AND customer_phone = v_customer_phone;
+    ELSE
+        -- Standard Flow: Snapshot to history
+        DECLARE
+            v_snap RECORD;
+        BEGIN
+            SELECT u.name AS customer_name, u.phone AS customer_phone,
+                   s.name AS supplier_name, s.phone AS supplier_phone,
+                   d.name AS driver_name, d.phone AS driver_phone,
+                   sp.yard_location AS yard_location
+            INTO v_snap
+            FROM orders o
+            LEFT JOIN users u ON o.customer_id = u.user_id
+            LEFT JOIN users s ON o.supplier_id = s.user_id
+            LEFT JOIN users d ON o.driver_id = d.user_id
+            LEFT JOIN suppliers sp ON o.supplier_id = sp.user_id
+            WHERE o.order_id = p_order_id;
 
-    -- Rating logic
-    IF p_rating IS NULL THEN
-        -- Customer skipped rating: keep rating unchanged, increment total_orders.
-        UPDATE suppliers
-        SET total_orders = total_orders + 1
-        WHERE user_id = v_supplier_id;
+            INSERT INTO order_history (
+                order_id, supplier_id, customer_name, customer_phone, supplier_name, supplier_phone, driver_name, driver_phone,
+                customer_location, yard_location, price, quantity, status, order_date, reason, customer_rating, rated_at, created_at
+            ) VALUES (
+                p_order_id, v_supplier_id,
+                COALESCE(v_snap.customer_name, ''),
+                COALESCE(v_snap.customer_phone, ''),
+                v_snap.supplier_name, v_snap.supplier_phone,
+                v_snap.driver_name, v_snap.driver_phone,
+                v_order_record.delivery_location, COALESCE(v_snap.yard_location, ''),
+                v_order_record.accepted_price, v_order_record.requested_capacity,
+                'completed', v_order_record.order_confirmed_at,
+                NULL, p_rating, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            );
 
-        -- Archive to order_history with null rating
-        INSERT INTO order_history (
-            order_id, customer_name, customer_phone, supplier_name, supplier_phone, driver_name, driver_phone,
-            customer_location, yard_location, price, quantity, status, order_date, reason, customer_rating, rated_at, created_at
-        ) VALUES (
-            v_order_record.order_id,
-            COALESCE(v_order_record.customer_name, ''),
-            COALESCE(v_order_record.customer_phone, ''),
-            v_order_record.supplier_name,
-            v_order_record.supplier_phone,
-            v_order_record.driver_name,
-            v_order_record.driver_phone,
-            v_order_record.delivery_location,
-            COALESCE(v_order_record.yard_location, ''),
-            v_order_record.accepted_price,
-            v_order_record.requested_capacity,
-            'completed',
-            v_order_record.order_confirmed_at,
-            NULL,
-            NULL,
-            CURRENT_TIMESTAMP,
-            CURRENT_TIMESTAMP
-        );
-
-        -- Delete from orders
-        DELETE FROM orders WHERE order_id = p_order_id;
-
-        RETURN json_build_object(
-            'code', 1,
-            'message', 'Rating skipped. Supplier total orders updated and order archived.'
-        );
+            DELETE FROM orders WHERE order_id = p_order_id;
+        END;
     END IF;
 
-    -- Customer provided rating: update weighted average and total_orders.
-    v_new_rating := ((COALESCE(v_current_rating, 0) * COALESCE(v_total_orders, 0)) + p_rating)
-                    / (COALESCE(v_total_orders, 0) + 1);
-
-    UPDATE suppliers
-    SET rating = v_new_rating,
-        total_orders = total_orders + 1
-    WHERE user_id = v_supplier_id;
-
-    -- Archive to order_history with rating
-    INSERT INTO order_history (
-        order_id, customer_name, customer_phone, supplier_name, supplier_phone, driver_name, driver_phone,
-        customer_location, yard_location, price, quantity, status, order_date, reason, customer_rating, rated_at, created_at
-    ) VALUES (
-        v_order_record.order_id,
-        COALESCE(v_order_record.customer_name, ''),
-        COALESCE(v_order_record.customer_phone, ''),
-        v_order_record.supplier_name,
-        v_order_record.supplier_phone,
-        v_order_record.driver_name,
-        v_order_record.driver_phone,
-        v_order_record.delivery_location,
-        COALESCE(v_order_record.yard_location, ''),
-        v_order_record.accepted_price,
-        v_order_record.requested_capacity,
-        'completed',
-        v_order_record.order_confirmed_at,
-        NULL,
-        p_rating,
-        CURRENT_TIMESTAMP,
-        CURRENT_TIMESTAMP
-    );
-
-    -- Delete from orders
-    DELETE FROM orders WHERE order_id = p_order_id;
-
-    RETURN json_build_object(
-        'code', 1,
-        'message', 'Rating submitted successfully and order archived.'
-    );
+    RETURN json_build_object('code', 1, 'message', 'Rating processed successfully');
     
-EXCEPTION
-    WHEN OTHERS THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Failed to submit rating: ' || SQLERRM
-        );
+EXCEPTION WHEN OTHERS THEN
+    RETURN json_build_object('code', 0, 'message', 'Failed to submit rating: ' || SQLERRM);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -981,6 +941,154 @@ EXCEPTION
         RETURN json_build_object(
             'code', 0,
             'message', 'Failed to retrieve order details: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+
+
+-- ============================================================================
+-- FUNCTION: Logout customer
+-- ============================================================================
+-- Purpose: Safely log out a customer. 
+--          1. Blocks logout if there is an active delivery in progress.
+--          2. If an 'open' order exists, deletes it (and its bids via cascade).
+--          3. Deletes the session token.
+-- Parameters:
+--   p_user_id: Customer user_id
+--   p_session_token: The session token to delete
+-- Returns: JSON object with status
+-- ============================================================================
+CREATE OR REPLACE FUNCTION logout_customer(
+    p_user_id INTEGER,
+    p_session_token VARCHAR(255)
+)
+RETURNS JSON AS $$
+DECLARE
+    v_active_order_exists BOOLEAN;
+BEGIN
+    -- 1. Check for active orders that MUST be physically completed first
+    -- 'finished' is now allowed because the trip is done.
+    SELECT EXISTS(
+        SELECT 1 FROM orders 
+        WHERE customer_id = p_user_id 
+        AND status NOT IN ('open', 'finished')
+    ) INTO v_active_order_exists;
+
+    IF v_active_order_exists THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Cannot logout while a delivery is in progress. Please wait for completion or cancel it first.'
+        );
+    END IF;
+
+    -- 2. Handle 'open' orders: delete them (bids will cascade delete)
+    DELETE FROM orders
+    WHERE customer_id = p_user_id AND status = 'open';
+
+    -- 3. Delete the session
+    DELETE FROM sessions 
+    WHERE token = p_session_token AND user_id = p_user_id;
+
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Logged out successfully.'
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Logout failed: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Delete customer account
+-- ============================================================================
+-- Purpose: Permanently delete a customer account. 
+--          1. Blocks deletion if there is an active delivery in progress.
+--          2. Deletes the user from the users table.
+--             (Note: Sessions and open orders will delete via ON DELETE CASCADE).
+-- Parameters:
+--   p_user_id: Customer user_id
+-- Returns: JSON object with status
+-- ============================================================================
+CREATE OR REPLACE FUNCTION delete_customer_account(
+    p_user_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_active_order_exists BOOLEAN;
+    v_order_record RECORD;
+BEGIN
+    -- 1. Check for active orders that MUST be physically completed first
+    SELECT EXISTS(
+        SELECT 1 FROM orders 
+        WHERE customer_id = p_user_id 
+        AND status IN ('supplier_timer', 'accepted', 'ride_started', 'reached')
+    ) INTO v_active_order_exists;
+
+    IF v_active_order_exists THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Cannot delete account while a delivery is in progress. Please wait for completion or cancel it first.'
+        );
+    END IF;
+
+    -- 2. Check for 'finished' orders that need archiving before account deletion
+    -- (We don't want to lose the delivery record).
+    -- If there's an 'open' order, CASCADE will delete it.
+    -- If there's a 'finished' order, we move it to history now.
+    FOR v_order_record IN (
+        SELECT o.*, u.name AS customer_name, u.phone AS customer_phone,
+               s.name AS supplier_name, s.phone AS supplier_phone,
+               d.name AS driver_name, d.phone AS driver_phone,
+               sp.yard_location AS yard_location
+        FROM orders o
+        LEFT JOIN users u ON o.customer_id = u.user_id
+        LEFT JOIN users s ON o.supplier_id = s.user_id
+        LEFT JOIN users d ON o.driver_id = d.user_id
+        LEFT JOIN suppliers sp ON o.supplier_id = sp.user_id
+        WHERE o.customer_id = p_user_id AND o.status = 'finished'
+    ) LOOP
+        -- Archive as 'completed' with skip rating
+        INSERT INTO order_history (
+            order_id, supplier_id, customer_name, customer_phone, supplier_name, supplier_phone, driver_name, driver_phone,
+            customer_location, yard_location, price, quantity, status, order_date, reason, customer_rating, rated_at, created_at
+        ) VALUES (
+            v_order_record.order_id, v_order_record.supplier_id,
+            COALESCE(v_order_record.customer_name, ''),
+            COALESCE(v_order_record.customer_phone, ''),
+            v_order_record.supplier_name, v_order_record.supplier_phone,
+            v_order_record.driver_name, v_order_record.driver_phone,
+            v_order_record.delivery_location, COALESCE(v_order_record.yard_location, ''),
+            v_order_record.accepted_price, v_order_record.requested_capacity,
+            'completed', v_order_record.order_confirmed_at,
+            NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+        
+        -- Delete from orders (to avoid double cascade)
+        DELETE FROM orders WHERE order_id = v_order_record.order_id;
+    END LOOP;
+
+    -- 3. Delete the user (cascades will handle sessions and open orders)
+    DELETE FROM users
+    WHERE user_id = p_user_id;
+
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Account deleted successfully. We are sorry to see you go!'
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Account deletion failed: ' || SQLERRM
         );
 END;
 $$ LANGUAGE plpgsql;

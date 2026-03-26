@@ -26,5 +26,7 @@ router.post('/orders/active/:orderId/cancel', startupController.cancelOrderSuppl
 router.post('/orders/active/:orderId/assign-driver', startupController.assignDriverForSupplierOrder);
 router.get('/history', startupController.viewPastOrders);
 router.get('/history/:orderId', startupController.viewPastOrderDetailsSupplier);
+router.post('/logout', startupController.logoutSupplier);
+router.delete('/', startupController.deleteSupplierAccount);
 
 module.exports = router;

@@ -2386,6 +2386,248 @@ const viewPastOrderDetailsDriver = async (req, res) => {
 };
 
 
+const deleteSupplierAccount = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+
+    const userId = auth.userId;
+
+    const dbResult = await query('SELECT delete_supplier_account($1) AS result', [userId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code === 0) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to delete account'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Account deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete supplier account error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete account',
+      error: error.message
+    });
+  }
+};
+
+
+const logoutCustomer = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const userId = auth.userId;
+
+    //  Manaully extracting token again
+
+    const authHeader = req.headers.authorization || '';
+    const bearerToken = authHeader.startsWith('Bearer ') ?
+      authHeader.slice(7).trim() : '';
+
+    const sessionToken = bearerToken || req.headers['x-session-token'] || null;
+
+    if (!sessionToken) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized: missing session token'
+      })
+    }
+
+    const dbResult = await query('SELECT logout_customer($1,$2) AS result', [userId, sessionToken]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code === 0) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to logout'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Logged out successfully'
+    });
+  }
+  catch (error) {
+    console.error('Logout customer error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to logout',
+      error: error.message
+    });
+  }
+};
+
+
+const logoutDriver = async (req, res) => {
+  try {
+    const auth = await getDriverUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const userId = auth.userId;
+    // Manual token extraction
+    const authHeader = req.headers.authorization || '';
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const sessionToken = bearerToken || req.headers['x-session-token'] || null;
+
+    if (!sessionToken) {
+      return res.status(401).json({ success: false, message: 'Unauthorized: missing session token' });
+    }
+
+    const dbResult = await query('SELECT logout_driver($1, $2) AS result', [userId, sessionToken]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code === 0) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to logout'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Logged out successfully'
+    });
+  } catch (error) {
+    console.error('Logout driver error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to logout',
+      error: error.message
+    });
+  }
+};
+
+
+const logoutSupplier = async (req, res) => {
+  try {
+    const auth = await getSupplierUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+
+    const userId = auth.userId;
+    // Manual token extraction
+    const authHeader = req.headers.authorization || '';
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const sessionToken = bearerToken || req.headers['x-session-token'] || null;
+
+    if (!sessionToken) {
+      return res.status(401).json({ success: false, message: 'Unauthorized: missing session token' });
+    }
+
+    const dbResult = await query('SELECT logout_supplier($1, $2) AS result', [userId, sessionToken]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code === 0) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to logout'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Logged out successfully'
+    });
+  } catch (error) {
+    console.error('Logout supplier error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to logout',
+      error: error.message
+    });
+  }
+};
+
+
+const deleteCustomerAccount = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+
+    const userId = auth.userId;
+
+    const dbResult = await query('SELECT delete_customer_account($1) AS result', [userId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code === 0) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to delete account'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Account deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete customer account error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete account',
+      error: error.message
+    });
+  }
+};
+
+
+const deleteDriverAccount = async (req, res) => {
+  try {
+    const auth = await getDriverUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+
+    const userId = auth.userId;
+
+    const dbResult = await query('SELECT delete_driver_account($1) AS result', [userId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code === 0) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to delete account'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Account deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete driver account error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete account',
+      error: error.message
+    });
+  }
+};
+
+
 module.exports = {
   getOrderDetailsCustomer,
   orderOpen,
@@ -2425,7 +2667,13 @@ module.exports = {
   viewPastOrders,
   viewPastOrderDetailsSupplier,
   viewPastOrderDetailsCustomer,
-  viewPastOrderDetailsDriver
+  viewPastOrderDetailsDriver,
+  logoutCustomer,
+  logoutDriver,
+  logoutSupplier,
+  deleteCustomerAccount,
+  deleteDriverAccount,
+  deleteSupplierAccount
 };
 
 

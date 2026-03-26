@@ -771,3 +771,165 @@ EXCEPTION
         );
 END;
 $$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Logout driver
+-- ============================================================================
+-- Purpose: Safely log out a driver. 
+--          1. Blocks logout if there is an active delivery or pending assignment.
+--             (Includes ANY assignment or active order in orders table).
+--          2. Sets driver availability to FALSE (Offline).
+--          3. Deletes the session token.
+-- Parameters:
+--   p_user_id: Driver user_id
+--   p_session_token: The session token to delete
+-- Returns: JSON object with status
+-- ============================================================================
+CREATE OR REPLACE FUNCTION logout_driver(
+    p_user_id INTEGER,
+    p_session_token VARCHAR(255)
+)
+RETURNS JSON AS $$
+DECLARE
+    v_active_order_exists BOOLEAN;
+BEGIN
+    -- 1. Check for active orders or assignments
+    -- We block if they are currently DOING a delivery (accepted, ride_started, reached)
+    -- OR if they have a pending invite (driver_assignment).
+    -- We ALLOW logout if the order is 'finished' (waiting for customer rating).
+    SELECT EXISTS(
+        SELECT 1 FROM orders 
+        WHERE driver_id = p_user_id 
+        AND status IN ('accepted', 'ride_started', 'reached')
+        UNION
+        SELECT 1 FROM driver_assignment WHERE driver_id = p_user_id
+    ) INTO v_active_order_exists;
+
+    IF v_active_order_exists THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Cannot logout while you have a delivery in progress or a pending assignment.'
+        );
+    END IF;
+
+    -- 2. Update availability to Offline
+    UPDATE supplier_drivers
+    SET available = FALSE
+    WHERE driver_user_id = p_user_id;
+
+    -- 3. Delete the session
+    DELETE FROM sessions 
+    WHERE token = p_session_token AND user_id = p_user_id;
+
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Logged out successfully. Status set to offline.'
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Logout failed: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
+-- FUNCTION: Delete driver account
+-- ============================================================================
+-- Purpose: Permanently delete a driver account. 
+--          1. Blocks deletion if there is an active delivery or pending assignment.
+--             (accepted, ride_started, reached, or in driver_assignment).
+--          2. If an order is in 'finished' status, archives it (moving to history).
+--          3. Deletes the user from the users table.
+--             (Note: Sessions, and driver link in supplier_drivers handle cleanup via cascade/trigger).
+-- Parameters:
+--   p_user_id: Driver user_id
+-- Returns: JSON object with status
+-- ============================================================================
+CREATE OR REPLACE FUNCTION delete_driver_account(
+    p_user_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_active_order_exists BOOLEAN;
+    v_order_record RECORD;
+BEGIN
+    -- 1. Check for active orders that MUST be physically completed first
+    -- Note: We ALLOW deletion if the driver is only in the 'driver_assignment' table 
+    -- (invited but not accepted), as that record will CASCADE delete.
+    SELECT EXISTS(
+        SELECT 1 FROM orders 
+        WHERE driver_id = p_user_id 
+        AND status IN ('accepted', 'ride_started', 'reached')
+    ) INTO v_active_order_exists;
+
+    IF v_active_order_exists THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Cannot delete account while you have an active delivery in progress. Please wait for completion.'
+        );
+    END IF;
+
+    -- 2. Check for 'finished' orders that need archiving before account deletion
+    -- (We don't want to lose the delivery record).
+    FOR v_order_record IN (
+        SELECT o.*, u.name AS customer_name, u.phone AS customer_phone,
+               s.name AS supplier_name, s.phone AS supplier_phone,
+               d.name AS driver_name, d.phone AS driver_phone,
+               sp.yard_location AS yard_location
+        FROM orders o
+        LEFT JOIN users u ON o.customer_id = u.user_id
+        LEFT JOIN users s ON o.supplier_id = s.user_id
+        LEFT JOIN users d ON o.driver_id = d.user_id
+        LEFT JOIN suppliers sp ON o.supplier_id = sp.user_id
+        WHERE o.driver_id = p_user_id AND o.status = 'finished'
+    ) LOOP
+        -- Archive as 'completed' with skip rating
+        INSERT INTO order_history (
+            order_id, supplier_id, customer_name, customer_phone, supplier_name, supplier_phone, driver_name, driver_phone,
+            customer_location, yard_location, price, quantity, status, order_date, reason, customer_rating, rated_at, created_at
+        ) VALUES (
+            v_order_record.order_id, v_order_record.supplier_id,
+            COALESCE(v_order_record.customer_name, ''),
+            COALESCE(v_order_record.customer_phone, ''),
+            v_order_record.supplier_name,
+            v_order_record.supplier_phone,
+            v_order_record.driver_name,
+            v_order_record.driver_phone,
+            v_order_record.delivery_location,
+            COALESCE(v_order_record.yard_location, ''),
+            v_order_record.accepted_price,
+            v_order_record.requested_capacity,
+            'completed',
+            v_order_record.order_confirmed_at,
+            NULL,
+            NULL,
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
+        );
+        
+        -- Delete from orders (to ensure history is the single record of truth)
+        DELETE FROM orders WHERE order_id = v_order_record.order_id;
+    END LOOP;
+
+    -- 3. Delete the user (cascades handle sessions and unlinking)
+    DELETE FROM users
+    WHERE user_id = p_user_id;
+
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Account deleted successfully. Safe travels!'
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Account deletion failed: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
