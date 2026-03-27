@@ -325,20 +325,7 @@ BEGIN
         );
     END IF;
 
-    SELECT COUNT(*)
-    INTO v_active_order_count
-    FROM orders
-    WHERE supplier_id = v_bid_record.supplier_id
-      AND status IN ('supplier_timer', 'accepted', 'ride_started', 'reached');
-
-    IF v_active_order_count >= v_available_driver_count THEN
-        RETURN json_build_object(
-            'code', 0,
-            'message', 'Selected supplier has reached active-order capacity based on available drivers',
-            'active_orders', v_active_order_count,
-            'available_drivers', v_available_driver_count
-        );
-    END IF;
+    
     
     -- Update order with accepted bid details
     UPDATE orders

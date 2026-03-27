@@ -291,6 +291,18 @@ BEGIN
             'message', 'Driver ID and Order ID cannot be null'
         );
     END IF;
+
+    -- Check if driver already has an active order
+    IF EXISTS(
+        SELECT 1 FROM orders
+        WHERE driver_id = p_driver_id
+        AND status IN ('accepted', 'ride_started', 'reached')
+    ) THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Driver already has an active order'
+        );
+    END IF;
     
     -- Check if driver was assigned to this order and get time limit
     SELECT time_limit_for_driver INTO v_time_limit

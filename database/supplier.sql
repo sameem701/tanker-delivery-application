@@ -919,6 +919,18 @@ BEGIN
         );
     END IF;
 
+    -- Check if the driver already has an active order (accepted, ride_started, reached)
+    IF EXISTS(
+    SELECT 1 FROM orders
+    WHERE driver_id = p_driver_id
+    AND status IN ('accepted', 'ride_started', 'reached')
+) THEN
+    RETURN json_build_object(
+        'code', 0,
+        'message', 'Driver already has an active order'
+    );
+END IF;
+
     -- Cleanup expired pending assignments for this driver.
     DELETE FROM driver_assignment
     WHERE driver_id = p_driver_id

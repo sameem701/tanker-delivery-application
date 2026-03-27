@@ -2276,7 +2276,7 @@ const viewPastOrders = async (req, res) => {
     const auth = await getAuthenticatedUserId(req);
     if (!auth.ok) {
       return res.status(auth.status).json({
-        sucess: false,
+        success: false,
         message: auth.message
       });
     }
@@ -2285,18 +2285,21 @@ const viewPastOrders = async (req, res) => {
     const dbResult = await query('SELECT view_past_orders($1) AS result', [userId]);
     const response = dbResult.rows[0].result;
 
-    if (!response || response.code == 0) {
+    if (!response || response.code === 0) {
       return res.status(400).json({
         success: false,
         message: response?.message || 'Failed to fetch order history'
       });
     }
 
+    // response is an object with 'orders' array
+    const orders = response.orders || [];
+
     return res.status(200).json({
       success: true,
       data: {
-        total_orders: Array.isArray(response) ? response.length : 0,
-        orders: Array.isArray(response) ? response : []
+        total_orders: orders.length,
+        orders: orders
       }
     });
   }
@@ -2679,16 +2682,6 @@ const deleteDriverAccount = async (req, res) => {
 
 
 module.exports = {
-  getOrderDetailsCustomer,
-  orderOpen,
-  getOrderDetailsDriver,
-  appStartup,
-  enterNumber,
-  storeOTP,
-  verifyOTP,
-  enterDetailsCustomer,
-  getOrderDetailsCustomer,
-  getOrderDetailsDriver,
   appStartup,
   enterNumber,
   storeOTP,
@@ -2705,12 +2698,16 @@ module.exports = {
   listBidsForCustomerOpenOrder,
   updateCustomerOpenOrderBid,
   acceptSupplierBidForCustomer,
+  rejectBidCustomer,
   submitOrderRatingForCustomer,
+  orderOpen,
+  getOrderDetailsCustomer,
+  getOrderDetailsDriver,
   listAvailableOrdersForSupplier,
-  getAvailableOrderDetailsForSupplier,
+  viewOneAvailableOrderSupplier,
   placeSupplierBid,
-  listActiveOrdersForSupplier,
-  getActiveOrderDetailsForSupplier,
+  listActiveOrdersSupplier,
+  viewOneActiveOrderSupplier,
   listAssignableDriversForSupplierOrder,
   assignDriverForSupplierOrder,
   acceptAssignedOrderForDriver,
@@ -2721,9 +2718,17 @@ module.exports = {
   cancelOrderCustomer,
   cancelOrderSupplier,
   cancelOrderDriver,
-  rejectBidCustomer
+  viewPastOrders,
+  viewPastOrderDetailsSupplier,
+  viewPastOrderDetailsCustomer,
+  viewPastOrderDetailsDriver,
+  deleteSupplierAccount,
+  deleteCustomerAccount,
+  deleteDriverAccount,
+  logoutCustomer,
+  logoutDriver,
+  logoutSupplier,
 };
-
 
 
 
