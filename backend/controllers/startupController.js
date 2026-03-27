@@ -1,3 +1,54 @@
+// Customer marketplace: reject a supplier bid for own open order.
+const rejectBidCustomer = async (req, res) => {
+  try {
+    const auth = await getCustomerUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({
+        success: false,
+        message: auth.message
+      });
+    }
+
+    const customerId = auth.userId;
+    const bidId = Number(req.body.bid_id || req.params.bidId);
+
+    if (!Number.isInteger(bidId) || bidId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'bid_id must be a positive integer'
+      });
+    }
+
+
+    const dbResult = await query('SELECT reject_bid($1, $2) AS result', [customerId, bidId]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to reject bid'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: response.message || 'Bid rejected successfully',
+      data: {
+        bid_id: bidId
+      }
+    });
+  } catch (error) {
+    console.error('Reject bid error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to reject bid',
+      error: error.message
+    });
+  }
+};
+
+
+
 // Customer: view order details with timer and status checks
 const getOrderDetailsCustomer = async (req, res) => {
   try {
@@ -2636,6 +2687,13 @@ module.exports = {
   storeOTP,
   verifyOTP,
   enterDetailsCustomer,
+  getOrderDetailsCustomer,
+  getOrderDetailsDriver,
+  appStartup,
+  enterNumber,
+  storeOTP,
+  verifyOTP,
+  enterDetailsCustomer,
   enterDetailsDriver,
   enterDetailsSupplier,
   addSupplierDriver,
@@ -2649,10 +2707,10 @@ module.exports = {
   acceptSupplierBidForCustomer,
   submitOrderRatingForCustomer,
   listAvailableOrdersForSupplier,
-  viewOneAvailableOrderSupplier,
+  getAvailableOrderDetailsForSupplier,
   placeSupplierBid,
-  listActiveOrdersSupplier,
-  viewOneActiveOrderSupplier,
+  listActiveOrdersForSupplier,
+  getActiveOrderDetailsForSupplier,
   listAssignableDriversForSupplierOrder,
   assignDriverForSupplierOrder,
   acceptAssignedOrderForDriver,
@@ -2663,16 +2721,7 @@ module.exports = {
   cancelOrderCustomer,
   cancelOrderSupplier,
   cancelOrderDriver,
-  viewPastOrders,
-  viewPastOrderDetailsSupplier,
-  viewPastOrderDetailsCustomer,
-  viewPastOrderDetailsDriver,
-  logoutCustomer,
-  logoutDriver,
-  logoutSupplier,
-  deleteCustomerAccount,
-  deleteDriverAccount,
-  deleteSupplierAccount
+  rejectBidCustomer
 };
 
 
