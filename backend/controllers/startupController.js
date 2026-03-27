@@ -14,7 +14,7 @@ const getOrderDetailsCustomer = async (req, res) => {
 
     // Fetch order status and timer info
     const orderResult = await query(
-      `SELECT status, supplier_timer_expires_at, completed_at FROM orders WHERE order_id = $1 AND customer_id = $2`,
+      `SELECT status, time_limit_for_supplier FROM orders WHERE order_id = $1 AND customer_id = $2`,
       [orderId, customerId]
     );
     const order = orderResult.rows[0];
@@ -22,18 +22,18 @@ const getOrderDetailsCustomer = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Order not found or does not belong to you' });
     }
 
-    // If completed, direct to rating
-    if (order.status === 'completed') {
+    // If finished, direct to rating
+    if (order.status === 'finished') {
       return res.status(409).json({
         success: false,
-        message: 'Order is completed. Please submit a rating.',
+        message: 'Order is finished. Please submit a rating.',
         next_screen: 'submit_rating'
       });
     }
 
     // Check supplier timer expiry (if in supplier_timer or later)
     if (order.status === 'supplier_timer' || order.status === 'accepted' || order.status === 'ride_started' || order.status === 'reached') {
-      if (order.supplier_timer_expires_at && new Date(order.supplier_timer_expires_at) < new Date()) {
+      if (order.time_limit_for_supplier && new Date(order.time_limit_for_supplier) < new Date()) {
         return res.status(410).json({
           success: false,
           message: 'Order expired, make a new order.'
@@ -121,8 +121,7 @@ const getOrderDetailsDriver = async (req, res) => {
       `SELECT 
         o.status, 
         o.time_limit_for_supplier, 
-        da.time_limit_for_driver, 
-        o.completed_at 
+        da.time_limit_for_driver 
       FROM orders o 
       LEFT JOIN driver_assignment da ON o.order_id = da.order_id AND da.driver_id = $2
       WHERE o.order_id = $1 AND (o.driver_id = $2 OR da.driver_id = $2)`,
@@ -133,11 +132,11 @@ const getOrderDetailsDriver = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Order not found or not assigned to you' });
     }
 
-    // If completed, do not show details
-    if (order.status === 'completed' || order.completed_at) {
+    // If finished, do not show details
+    if (order.status === 'finished') {
       return res.status(409).json({
         success: false,
-        message: 'Order is completed.'
+        message: 'Order is finished.'
       });
     }
 

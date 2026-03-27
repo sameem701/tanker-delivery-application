@@ -1007,6 +1007,75 @@ $$ LANGUAGE plpgsql;
 
 
 -- ============================================================================
+-- FUNCTION: Reject a specific bid
+-- ============================================================================
+-- Purpose: Customer manually dismisses a bid from their open order list
+-- Parameters:
+--   p_user_id: Customer user_id (for authorization)
+--   p_bid_id: Bid ID to reject
+-- Returns: JSON object with status
+-- ============================================================================
+CREATE OR REPLACE FUNCTION reject_bid(
+    p_user_id INTEGER,
+    p_bid_id INTEGER
+)
+RETURNS JSON AS $$
+DECLARE
+    v_order_id INTEGER;
+    v_order_status VARCHAR(20);
+    v_customer_id INTEGER;
+BEGIN
+    -- 1. Find the order associated with this bid
+    SELECT b.order_id, o.status, o.customer_id 
+    INTO v_order_id, v_order_status, v_customer_id
+    FROM bids b
+    JOIN orders o ON b.order_id = o.order_id
+    WHERE b.bid_id = p_bid_id;
+
+    -- 2. Validate existence
+    IF NOT FOUND THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Bid not found'
+        );
+    END IF;
+
+    -- 3. Validate ownership (only the customer who owns the order can reject bids)
+    IF v_customer_id != p_user_id THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Not authorized to reject this bid'
+        );
+    END IF;
+
+    -- 4. Validate order status (can only reject bids while order is still 'open')
+    IF v_order_status != 'open' THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Cannot reject bids once an order has progressed past open status'
+        );
+    END IF;
+
+    -- 5. Delete the bid
+    DELETE FROM bids
+    WHERE bid_id = p_bid_id;
+
+    RETURN json_build_object(
+        'code', 1,
+        'message', 'Bid rejected successfully'
+    );
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Failed to reject bid: ' || SQLERRM
+        );
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ============================================================================
 -- FUNCTION: Delete customer account
 -- ============================================================================
 -- Purpose: Permanently delete a customer account. 

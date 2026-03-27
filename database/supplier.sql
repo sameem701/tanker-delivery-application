@@ -518,17 +518,17 @@ DECLARE
 BEGIN
     -- Validate order_id
     IF p_order_id IS NULL THEN
-        IF p_order_id IS NULL THEN
+        RETURN json_build_object(
             'code', 0,
             'message', 'Order ID cannot be null'
-                'message', 'Order ID cannot be null'
+        );
     END IF;
 
     IF p_supplier_id IS NULL THEN
         RETURN json_build_object(
             'code', 0,
             'message', 'Supplier ID cannot be null'
-                'message', 'Supplier ID cannot be null'
+        );
     END IF;
 
     -- Only suppliers with at least one linked and available driver can view full details.
@@ -543,7 +543,7 @@ BEGIN
         RETURN json_build_object(
             'code', 0,
             'message', 'You need at least one available linked driver to view full order details'
-                'message', 'You need at least one available linked driver to view full order details'
+        );
     END IF;
     
     -- Get order details
@@ -582,11 +582,11 @@ BEGIN
 EXCEPTION
     WHEN OTHERS THEN
         RETURN json_build_object(
+            'code', 0,
             'message', 'Failed to fetch order details: ' || SQLERRM
-                'message', 'Failed to fetch order details: ' || SQLERRM
         );
+END;
 $$ LANGUAGE plpgsql;
-    $$ LANGUAGE plpgsql;
 
 
 -- ============================================================================
