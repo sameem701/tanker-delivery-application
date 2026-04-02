@@ -279,7 +279,7 @@ BEGIN
         TRIM(p_driver_phone_num),
         p_supplier_id,
         NULL,
-        TRUE,
+        FALSE,
         NULL
     );
 

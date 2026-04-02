@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS SUPPLIER_DRIVERS(
     DRIVER_PHONE_NUM VARCHAR(20) UNIQUE NOT NULL,       -- as specified by supplier
     SUPPLIER_USER_ID INT REFERENCES SUPPLIERS(USER_ID) ON DELETE CASCADE,
     DRIVER_USER_ID INTEGER UNIQUE  REFERENCES USERS(USER_ID) ON DELETE SET NULL DEFAULT NULL,
-    AVAILABLE BOOLEAN DEFAULT TRUE,
+    AVAILABLE BOOLEAN DEFAULT FALSE,
     JOINED_AT TIMESTAMP,
     PRIMARY KEY (DRIVER_PHONE_NUM, SUPPLIER_USER_ID)
 );
@@ -516,17 +516,24 @@ BEGIN
     END IF;
     
     -- OTP is correct, check if user already exists
-    SELECT user_id INTO v_existing_user_id
+    SELECT user_id, role INTO v_existing_user_id, v_user_role
     FROM users
     WHERE phone = p_phone;
-    
+
     IF v_existing_user_id IS NOT NULL THEN
-        -- User exists, just update verified status
-        UPDATE users
-        SET verified = TRUE
+        UPDATE users SET verified = TRUE 
         WHERE user_id = v_existing_user_id;
-        
+
+    -- If the existing user is a driver, also mark them as available in supplier_drivers    
+        IF v_user_role = 'driver' THEN
+            UPDATE supplier_drivers 
+            SET available = TRUE 
+            WHERE driver_user_id = v_existing_user_id;
+        END IF;
+    
         v_new_user_id := v_existing_user_id;
+    
+    
     ELSE
         -- User doesn't exist, insert new user
         INSERT INTO users (name, phone, role, verified, CREATED_AT)
