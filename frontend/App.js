@@ -1,5 +1,5 @@
-import OtpFlowScreen from './src/screens/OtpFlowScreen';
+import AppNavigation from './src/navigation';
 
 export default function App() {
-  return <OtpFlowScreen />;
+  return <AppNavigation />;
 }
