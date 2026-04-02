@@ -71,6 +71,7 @@ BEGIN
     -- New driver: Update supplier_drivers table with driver_user_id and joined_at
     UPDATE supplier_drivers
     SET driver_user_id = p_driver_id,
+        available = TRUE,
         joined_at = CURRENT_TIMESTAMP
     WHERE driver_phone_num = v_phone_number;
     
