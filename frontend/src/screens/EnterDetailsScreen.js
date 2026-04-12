@@ -38,13 +38,8 @@ export default function EnterDetailsScreen({ route, navigation }) {
             setLoading(true);
             setErrorMessage('');
 
-            if (selectedRole === 'customer') {
-                await submitCustomerDetails(sessionToken, { name: name.trim(), home_address: homeAddress.trim() || null });
-            } else if (selectedRole === 'driver') {
-                await submitDriverDetails(sessionToken, { name: name.trim() });
-            } else {
-                await submitSupplierDetails(sessionToken, { name: name.trim(), yard_location: yardLocation.trim(), business_contact: businessContact.trim() });
-            }
+            // Mocked detail submission
+            await new Promise(resolve => setTimeout(resolve, 500));
 
             navigation.navigate('Dashboard', { phone, role: selectedRole });
         } catch (error) {

@@ -37,10 +37,10 @@ export default function EnterPhoneScreen({ navigation }) {
             setErrorMessage('');
             setInfoMessage('');
 
-            await enterNumber(phone.trim());
+            // Mocked enterNumber and storeOtp
+            await new Promise(resolve => setTimeout(resolve, 500));
             const generatedOtp = generateOtp();
-            console.log('Generated verification code:', generatedOtp);
-            await storeOtp(phone.trim(), generatedOtp);
+            console.log('Mocked generated verification code:', generatedOtp);
 
             navigation.navigate('VerifyOtp', { phone: phone.trim() });
         } catch (error) {

@@ -51,12 +51,12 @@ export default function VerifyOtpScreen({ route, navigation }) {
             setErrorMessage('');
             setInfoMessage('');
 
-            console.log('Entered verification code:', otpCode.trim());
-            const response = await verifyOtp(phone, otpCode.trim());
-            const data = response?.data || {};
-            const nextScreen = data.next_screen || 'enter_number';
-            const role = data.role || 'undefined';
-            const sessionToken = data.session_token || '';
+            console.log('Mocked Verification code entered:', otpCode.trim());
+            await new Promise(resolve => setTimeout(resolve, 500));
+            const data = { next_screen: 'enter_details', role: 'undefined', session_token: 'mock_token' };
+            const nextScreen = data.next_screen;
+            const role = data.role;
+            const sessionToken = data.session_token;
 
             if (nextScreen === 'enter_details') {
                 navigation.navigate('EnterDetails', { phone, sessionToken });
@@ -81,8 +81,8 @@ export default function VerifyOtpScreen({ route, navigation }) {
             setLoading(true);
             setErrorMessage('');
             const generatedOtp = generateOtp();
-            console.log('Generated verification code (resend):', generatedOtp);
-            await storeOtp(phone, generatedOtp);
+            console.log('Mocked generated verification code (resend):', generatedOtp);
+            await new Promise(resolve => setTimeout(resolve, 500));
             setInfoMessage('OTP sent');
             setVerifyLocked(false);
             setOtpCode('');
