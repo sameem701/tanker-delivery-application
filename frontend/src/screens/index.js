@@ -1,3 +1,4 @@
-export { default as CustomerDashboard } from './dashboard/CustomerDashboard';
-export { default as SupplierDashboard } from './dashboard/SupplierDashboard';
-export { default as DriverDashboard } from './dashboard/DriverDashboard';
+export { default as EnterPhoneScreen } from './EnterPhoneScreen';
+export { default as VerifyOtpScreen } from './VerifyOtpScreen';
+export { default as EnterDetailsScreen } from './EnterDetailsScreen';
+export { default as DashboardScreen } from './DashboardScreen';

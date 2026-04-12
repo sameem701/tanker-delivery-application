@@ -1,11 +1,8 @@
-import { StatusBar } from 'expo-status-bar';
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View, TextInput } from 'react-native';
+import { Picker } from '@react-native-picker/picker';
 import { submitCustomerDetails, submitDriverDetails, submitSupplierDetails } from '../api/authApi';
-import AppButton from '../components/ui/AppButton';
-import AppInput from '../components/ui/AppInput';
-import ErrorBanner from '../components/ui/ErrorBanner';
-import { colors, radius, spacing, typography } from '../theme/tokens';
+import BasicButton from '../components/ui/BasicButton';
 
 function getErrorMessage(error) {
     return error?.message || 'Something went wrong. Please try again.';
@@ -38,14 +35,19 @@ export default function EnterDetailsScreen({ route, navigation }) {
             setLoading(true);
             setErrorMessage('');
 
-            // Mocked detail submission
-            await new Promise(resolve => setTimeout(resolve, 500));
+            if (selectedRole === 'customer') {
+                await submitCustomerDetails(sessionToken, { name: name.trim(), home_address: homeAddress.trim() || null });
+            } else if (selectedRole === 'driver') {
+                await submitDriverDetails(sessionToken, { name: name.trim() });
+            } else {
+                await submitSupplierDetails(sessionToken, { name: name.trim(), yard_location: yardLocation.trim(), business_contact: businessContact.trim() });
+            }
 
-            navigation.navigate('Dashboard', { phone, role: selectedRole });
+            navigation.navigate('Dashboard', { phone, role: selectedRole, sessionToken });
         } catch (error) {
             const message = getErrorMessage(error);
             if (error?.status === 401 && error?.payload?.data?.next_screen === 'enter_number') {
-                navigation.navigate('EnterPhoneScreen');
+                navigation.navigate('EnterPhone');
                 return;
             }
             setErrorMessage(message);
@@ -55,69 +57,52 @@ export default function EnterDetailsScreen({ route, navigation }) {
     }
 
     return (
-        <View style={styles.container}>
-            <StatusBar style="dark" />
-            <View style={styles.card}>
-                <Text style={styles.title}>Tanker Delivery</Text>
-                <Text style={styles.subtitle}>Enter Details</Text>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <View style={{ width: '90%', maxWidth: 420 }}>
+                <Text>Tanker Delivery</Text>
+                <Text>Enter Details</Text>
 
-                <ErrorBanner message={errorMessage} />
+                {errorMessage ? <Text>{errorMessage}</Text> : null}
 
-                <View style={styles.section}>
-                    <Text style={styles.successText}>Choose role and submit details.</Text>
-                    <View style={styles.roleRow}>
-                        {['customer', 'supplier', 'driver'].map((role) => (
-                            <Pressable
-                                key={role}
-                                onPress={() => setSelectedRole(role)}
-                                style={[styles.roleChip, selectedRole === role ? styles.roleChipActive : null]}
-                            >
-                                <Text style={[styles.roleChipText, selectedRole === role ? styles.roleChipTextActive : null]}>
-                                    {role}
-                                </Text>
-                            </Pressable>
-                        ))}
-                    </View>
+                <View>
+                    <Text>Choose role and submit details.</Text>
+                    <Picker selectedValue={selectedRole} onValueChange={setSelectedRole}>
+                        <Picker.Item label="customer" value="customer" />
+                        <Picker.Item label="supplier" value="supplier" />
+                        <Picker.Item label="driver" value="driver" />
+                    </Picker>
 
-                    <AppInput label="Name" placeholder="Enter your name" value={name} onChangeText={setName} />
+                    <Text>Name</Text>
+                    <TextInput placeholder="Enter your name" value={name} onChangeText={setName} style={{ borderWidth: 1 }} />
 
                     {selectedRole === 'customer' ? (
-                        <AppInput label="Home Address (optional)" placeholder="Enter home address" value={homeAddress} onChangeText={setHomeAddress} />
+                        <View>
+                            <Text>Home Address (optional)</Text>
+                            <TextInput placeholder="Enter home address" value={homeAddress} onChangeText={setHomeAddress} style={{ borderWidth: 1 }} />
+                        </View>
                     ) : null}
 
                     {selectedRole === 'supplier' ? (
-                        <>
-                            <AppInput label="Yard Location" placeholder="Enter yard location" value={yardLocation} onChangeText={setYardLocation} />
-                            <AppInput label="Business Contact" placeholder="Enter business contact" value={businessContact} onChangeText={setBusinessContact} />
-                        </>
+                        <View>
+                            <Text>Yard Location</Text>
+                            <TextInput placeholder="Enter yard location" value={yardLocation} onChangeText={setYardLocation} style={{ borderWidth: 1 }} />
+                            <Text>Business Contact</Text>
+                            <TextInput placeholder="Enter business contact" value={businessContact} onChangeText={setBusinessContact} style={{ borderWidth: 1 }} />
+                        </View>
                     ) : null}
 
-                    <AppButton title="Submit Details" onPress={handleSubmitDetails} disabled={loading || !canSubmitDetails} />
+                    <View>
+                        <BasicButton title="Submit Details" onPress={handleSubmitDetails} disabled={loading || !canSubmitDetails} />
+                    </View>
                 </View>
 
                 {loading && (
-                    <View style={styles.loaderRow}>
-                        <ActivityIndicator size="small" color={colors.primary} />
-                        <Text style={styles.loaderText}>Please wait...</Text>
+                    <View>
+                        <ActivityIndicator size="small" />
+                        <Text>Please wait...</Text>
                     </View>
                 )}
             </View>
         </View>
     );
 }
-
-const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: colors.background, justifyContent: 'center', paddingHorizontal: spacing.lg },
-    card: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.lg, padding: spacing.lg, gap: spacing.md },
-    title: { color: colors.textPrimary, fontSize: typography.title, fontWeight: '700' },
-    subtitle: { color: colors.textSecondary, fontSize: typography.body },
-    section: { gap: spacing.md },
-    successText: { color: colors.success, fontSize: typography.caption },
-    roleRow: { flexDirection: 'row', gap: spacing.xs, marginVertical: spacing.xs },
-    roleChip: { flex: 1, paddingVertical: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, alignItems: 'center' },
-    roleChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-    roleChipText: { color: colors.textSecondary, fontSize: typography.caption, fontWeight: '600', textTransform: 'capitalize' },
-    roleChipTextActive: { color: '#fff' },
-    loaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: spacing.md, gap: spacing.sm },
-    loaderText: { color: colors.textSecondary, fontSize: typography.caption },
-});

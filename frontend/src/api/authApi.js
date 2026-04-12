@@ -57,3 +57,24 @@ export function submitSupplierDetails(token, payload) {
     body: payload,
   });
 }
+
+export function logoutCustomer(token) {
+  return apiRequest('/customer/logout', {
+    method: 'POST',
+    token,
+  });
+}
+
+export function logoutSupplier(token) {
+  return apiRequest('/supplier/logout', {
+    method: 'POST',
+    token,
+  });
+}
+
+export function logoutDriver(token) {
+  return apiRequest('/driver/logout', {
+    method: 'POST',
+    token,
+  });
+}

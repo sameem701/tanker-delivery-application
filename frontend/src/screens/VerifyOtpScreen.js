@@ -1,11 +1,7 @@
-import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View, TextInput } from 'react-native';
 import { storeOtp, verifyOtp } from '../api/authApi';
-import AppButton from '../components/ui/AppButton';
-import AppInput from '../components/ui/AppInput';
-import ErrorBanner from '../components/ui/ErrorBanner';
-import { colors, radius, spacing, typography } from '../theme/tokens';
+import BasicButton from '../components/ui/BasicButton';
 
 const RESEND_COOLDOWN_SECONDS = 60;
 
@@ -51,17 +47,17 @@ export default function VerifyOtpScreen({ route, navigation }) {
             setErrorMessage('');
             setInfoMessage('');
 
-            console.log('Mocked Verification code entered:', otpCode.trim());
-            await new Promise(resolve => setTimeout(resolve, 500));
-            const data = { next_screen: 'enter_details', role: 'undefined', session_token: 'mock_token' };
-            const nextScreen = data.next_screen;
-            const role = data.role;
-            const sessionToken = data.session_token;
+            console.log('Entered verification code:', otpCode.trim());
+            const response = await verifyOtp(phone, otpCode.trim());
+            const data = response?.data || {};
+            const nextScreen = data.next_screen || 'enter_number';
+            const role = data.role || 'undefined';
+            const sessionToken = data.session_token || '';
 
             if (nextScreen === 'enter_details') {
                 navigation.navigate('EnterDetails', { phone, sessionToken });
             } else {
-                navigation.navigate('Dashboard', { phone, role });
+                navigation.navigate('Dashboard', { phone, role, sessionToken });
             }
         } catch (error) {
             const message = getErrorMessage(error);
@@ -81,8 +77,8 @@ export default function VerifyOtpScreen({ route, navigation }) {
             setLoading(true);
             setErrorMessage('');
             const generatedOtp = generateOtp();
-            console.log('Mocked generated verification code (resend):', generatedOtp);
-            await new Promise(resolve => setTimeout(resolve, 500));
+            console.log('Generated verification code (resend):', generatedOtp);
+            await storeOtp(phone, generatedOtp);
             setInfoMessage('OTP sent');
             setVerifyLocked(false);
             setOtpCode('');
@@ -95,54 +91,43 @@ export default function VerifyOtpScreen({ route, navigation }) {
     }
 
     return (
-        <View style={styles.container}>
-            <StatusBar style="dark" />
-            <View style={styles.card}>
-                <Text style={styles.title}>Tanker Delivery</Text>
-                <Text style={styles.subtitle}>Enter Verification Code</Text>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <View style={{ width: '90%', maxWidth: 420 }}>
+                <Text>Tanker Delivery</Text>
+                <Text>Enter Verification Code</Text>
 
-                <ErrorBanner message={errorMessage} />
-                {infoMessage ? <Text style={styles.infoText}>{infoMessage}</Text> : null}
+                {errorMessage ? <Text>{errorMessage}</Text> : null}
+                {infoMessage ? <Text>{infoMessage}</Text> : null}
 
-                <View style={styles.section}>
-                    <Text style={styles.helperText}>OTP sent to {phone}</Text>
-                    <Text style={styles.helperText}>
+                <View>
+                    <Text>OTP sent to {phone}</Text>
+                    <Text>
                         {cooldownSeconds > 0
                             ? `Request new OTP in ${cooldownSeconds}s`
                             : 'You can request a new OTP now.'}
                     </Text>
-                    <AppInput
-                        label="Verification Code"
+                    <Text>Verification Code</Text>
+                    <TextInput
                         placeholder="Enter OTP"
                         keyboardType="number-pad"
                         value={otpCode}
                         onChangeText={setOtpCode}
                         maxLength={6}
+                        style={{ borderWidth: 1 }}
                     />
-                    <AppButton title="Verify OTP" onPress={handleVerifyOtp} disabled={loading || !canVerifyOtp} />
-                    <AppButton title="Request New OTP" onPress={handleResendOtp} disabled={loading || !canResendOtp} />
+                    <BasicButton title="Verify OTP" onPress={handleVerifyOtp} disabled={loading || !canVerifyOtp} />
+                    <View>
+                        <BasicButton title="Request New OTP" onPress={handleResendOtp} disabled={loading || !canResendOtp} />
+                    </View>
                 </View>
 
                 {loading && (
-                    <View style={styles.loaderRow}>
-                        <ActivityIndicator size="small" color={colors.primary} />
-                        <Text style={styles.loaderText}>Please wait...</Text>
+                    <View>
+                        <ActivityIndicator size="small" />
+                        <Text>Please wait...</Text>
                     </View>
                 )}
             </View>
         </View>
     );
 }
-
-// ... styles can be moved to a shared file later, but we'll include them here for now
-const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: colors.background, justifyContent: 'center', paddingHorizontal: spacing.lg },
-    card: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.lg, padding: spacing.lg, gap: spacing.md },
-    title: { color: colors.textPrimary, fontSize: typography.title, fontWeight: '700' },
-    subtitle: { color: colors.textSecondary, fontSize: typography.body },
-    section: { gap: spacing.md },
-    infoText: { color: colors.success, fontSize: typography.caption },
-    helperText: { color: colors.textSecondary, fontSize: typography.caption, marginBottom: -spacing.xs },
-    loaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: spacing.md, gap: spacing.sm },
-    loaderText: { color: colors.textSecondary, fontSize: typography.caption },
-});

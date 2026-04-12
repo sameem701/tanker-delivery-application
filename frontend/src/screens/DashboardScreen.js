@@ -1,39 +1,59 @@
-import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
-import AppButton from '../components/ui/AppButton';
-import { colors, radius, spacing, typography } from '../theme/tokens';
+import React, { useState } from 'react';
+import { View, Text, Alert } from 'react-native';
+import CustomerDashboard from './dashboard/CustomerDashboard';
+import SupplierDashboard from './dashboard/SupplierDashboard';
+import DriverDashboard from './dashboard/DriverDashboard';
+import BasicButton from '../components/ui/BasicButton';
+import { logoutCustomer, logoutSupplier, logoutDriver } from '../api/authApi';
 
 export default function DashboardScreen({ route, navigation }) {
-    const { phone, role } = route.params || { phone: 'Unknown', role: 'undefined' };
+    const { phone, role, sessionToken } = route.params || { phone: 'Unknown', role: 'undefined', sessionToken: '' };
+    const [loggingOut, setLoggingOut] = useState(false);
 
-    function handleLogout() {
-        navigation.reset({ index: 0, routes: [{ name: 'EnterPhone' }] });
+    const logoutByRole = {
+        customer: logoutCustomer,
+        supplier: logoutSupplier,
+        driver: logoutDriver
+    };
+
+    async function handleLogout() {
+        const logoutFn = logoutByRole[role];
+
+        if (!logoutFn) {
+            Alert.alert('Error', `Unknown role: ${role}`);
+            return;
+        }
+
+        if (!sessionToken) {
+            Alert.alert('Error', 'Missing session token. Please login again.');
+            return;
+        }
+
+        try {
+            setLoggingOut(true);
+            await logoutFn(sessionToken);
+            navigation.reset({ index: 0, routes: [{ name: 'EnterPhone' }] });
+        } catch (error) {
+            Alert.alert('Logout Failed', error.message || 'Failed to logout');
+        } finally {
+            setLoggingOut(false);
+        }
     }
 
     return (
-        <View style={styles.container}>
-            <StatusBar style="dark" />
-            <View style={styles.card}>
-                <Text style={styles.title}>Tanker Delivery</Text>
-                <Text style={styles.subtitle}>Dashboard</Text>
-
-                <View style={styles.section}>
-                    <Text style={styles.successText}>Welcome to the App!</Text>
-                    <Text style={styles.metaText}>Role: {role}</Text>
-                    <Text style={styles.metaText}>Phone: {phone}</Text>
-                    <AppButton title="Logout" onPress={handleLogout} />
-                </View>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <View style={{ width: '90%', maxWidth: 420 }}>
+                <Text>Role: {role}</Text>
+                <Text>Phone: {phone}</Text>
+                <BasicButton title={loggingOut ? 'Logging out...' : 'Logout'} onPress={handleLogout} disabled={loggingOut} />
             </View>
+
+            {role === 'customer' && <CustomerDashboard sessionToken={sessionToken} />}
+            {role === 'supplier' && <SupplierDashboard sessionToken={sessionToken} />}
+            {role === 'driver' && <DriverDashboard sessionToken={sessionToken} />}
+            {role !== 'customer' && role !== 'supplier' && role !== 'driver' && (
+                <Text>Unknown role: {role}</Text>
+            )}
         </View>
     );
 }
-
-const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: colors.background, justifyContent: 'center', paddingHorizontal: spacing.lg },
-    card: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.lg, padding: spacing.lg, gap: spacing.md },
-    title: { color: colors.textPrimary, fontSize: typography.title, fontWeight: '700' },
-    subtitle: { color: colors.textSecondary, fontSize: typography.body },
-    section: { gap: spacing.md },
-    successText: { color: colors.success, fontSize: typography.caption },
-    metaText: { color: colors.textSecondary, fontSize: typography.caption },
-});

@@ -10,7 +10,6 @@ export default function AppButton({ title, onPress, disabled = false }) {
         styles.button,
         disabled && styles.disabled,
         pressed && !disabled && styles.pressed,
-        styles.shadow,
       ]}
     >
       <Text style={styles.text}>{title}</Text>
@@ -21,30 +20,19 @@ export default function AppButton({ title, onPress, disabled = false }) {
 const styles = StyleSheet.create({
   button: {
     backgroundColor: colors.primary,
-    borderRadius: radius.lg,
-    paddingVertical: spacing.lg,
-    paddingHorizontal: spacing.xl,
+    borderRadius: radius.md,
+    paddingVertical: spacing.md,
     alignItems: 'center',
-    marginVertical: spacing.sm,
-    minWidth: 180,
   },
   pressed: {
     backgroundColor: colors.primaryPressed,
   },
   disabled: {
-    opacity: 0.5,
+    opacity: 0.6,
   },
   text: {
     color: colors.surface,
-    fontSize: typography.subtitle,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  shadow: {
-    shadowColor: colors.shadow,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 3,
+    fontSize: typography.body,
+    fontWeight: '600',
   },
 });

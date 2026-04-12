@@ -1,11 +1,7 @@
-import { StatusBar } from 'expo-status-bar';
 import { useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View, TextInput } from 'react-native';
 import { enterNumber, storeOtp } from '../api/authApi';
-import AppButton from '../components/ui/AppButton';
-import AppInput from '../components/ui/AppInput';
-import ErrorBanner from '../components/ui/ErrorBanner';
-import { colors, radius, spacing, typography } from '../theme/tokens';
+import BasicButton from '../components/ui/BasicButton';
 
 function generateOtp() {
     return Math.floor(100000 + Math.random() * 900000).toString();
@@ -37,10 +33,10 @@ export default function EnterPhoneScreen({ navigation }) {
             setErrorMessage('');
             setInfoMessage('');
 
-            // Mocked enterNumber and storeOtp
-            await new Promise(resolve => setTimeout(resolve, 500));
+            await enterNumber(phone.trim());
             const generatedOtp = generateOtp();
-            console.log('Mocked generated verification code:', generatedOtp);
+            console.log('Generated verification code:', generatedOtp);
+            await storeOtp(phone.trim(), generatedOtp);
 
             navigation.navigate('VerifyOtp', { phone: phone.trim() });
         } catch (error) {
@@ -51,77 +47,33 @@ export default function EnterPhoneScreen({ navigation }) {
     }
 
     return (
-        <View style={styles.container}>
-            <StatusBar style="dark" />
-            <View style={styles.card}>
-                <Text style={styles.title}>Tanker Delivery</Text>
-                <Text style={styles.subtitle}>Enter Phone Number</Text>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <View style={{ width: '90%', maxWidth: 420 }}>
+                <Text>Tanker Delivery</Text>
+                <Text>Enter Phone Number</Text>
 
-                <ErrorBanner message={errorMessage} />
-                {infoMessage ? <Text style={styles.infoText}>{infoMessage}</Text> : null}
+                {errorMessage ? <Text>{errorMessage}</Text> : null}
+                {infoMessage ? <Text>{infoMessage}</Text> : null}
 
-                <View style={styles.section}>
-                    <AppInput
-                        label="Phone Number"
+                <View>
+                    <Text>Phone Number</Text>
+                    <TextInput
                         placeholder="+91 9876543210"
                         keyboardType="phone-pad"
                         value={phone}
                         onChangeText={setPhone}
+                        style={{ borderWidth: 1 }}
                     />
-                    <AppButton title="Send OTP" onPress={handleSendOtp} disabled={loading || !canSendOtp} />
+                    <BasicButton title="Send OTP" onPress={handleSendOtp} disabled={loading || !canSendOtp} />
                 </View>
 
                 {loading && (
-                    <View style={styles.loaderRow}>
-                        <ActivityIndicator size="small" color={colors.primary} />
-                        <Text style={styles.loaderText}>Please wait...</Text>
+                    <View>
+                        <ActivityIndicator size="small" />
+                        <Text>Please wait...</Text>
                     </View>
                 )}
             </View>
         </View>
     );
 }
-
-const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: colors.background,
-        justifyContent: 'center',
-        paddingHorizontal: spacing.lg,
-    },
-    card: {
-        backgroundColor: colors.surface,
-        borderWidth: 1,
-        borderColor: colors.border,
-        borderRadius: radius.lg,
-        padding: spacing.lg,
-        gap: spacing.md,
-    },
-    title: {
-        color: colors.textPrimary,
-        fontSize: typography.title,
-        fontWeight: '700',
-    },
-    subtitle: {
-        color: colors.textSecondary,
-        fontSize: typography.body,
-    },
-    section: {
-        gap: spacing.md,
-    },
-    infoText: {
-        color: colors.success,
-        fontSize: typography.caption,
-    },
-    loaderRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginTop: spacing.md,
-        gap: spacing.sm,
-    },
-    loaderText: {
-        color: colors.textSecondary,
-        fontSize: typography.caption,
-    },
-});
