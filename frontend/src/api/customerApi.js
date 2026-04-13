@@ -21,3 +21,40 @@ export function cancelCustomerOrder(token, orderId) {
         token,
     });
 }
+
+export function getCustomerOpenOrder(token, orderId) {
+    return apiRequest(`/customer/orders/${orderId}/open`, {
+        method: 'GET',
+        token,
+    });
+}
+
+export function listCustomerOrderBids(token, orderId) {
+    return apiRequest(`/customer/orders/${orderId}/bids`, {
+        method: 'GET',
+        token,
+    });
+}
+
+export function updateCustomerOrderBid(token, orderId, customerBidPrice) {
+    return apiRequest(`/customer/orders/${orderId}/bid`, {
+        method: 'PATCH',
+        token,
+        body: { customer_bid_price: customerBidPrice },
+    });
+}
+
+export function acceptCustomerBid(token, orderId, bidId) {
+    return apiRequest(`/customer/orders/${orderId}/accept-bid`, {
+        method: 'POST',
+        token,
+        body: { bid_id: bidId },
+    });
+}
+
+export function rejectCustomerBid(token, orderId, bidId) {
+    return apiRequest(`/customer/orders/${orderId}/bids/${bidId}/reject`, {
+        method: 'POST',
+        token,
+    });
+}

@@ -163,12 +163,20 @@ export default function SupplierDashboard({ sessionToken }) {
         }
 
         try {
-            await removeSupplierDriver(sessionToken, driverPhoneNum);
-            fetchDrivers();
-            Alert.alert('Success', 'Driver removed successfully');
-        } catch (error) {
-            Alert.alert('Error', error.message || 'Failed to remove driver');
+    await removeSupplierDriver(sessionToken, driverPhoneNum);
+    
+    // Driver is confirmed removed. Now try to refresh the list.
+    try {
+            await fetchDrivers();
+        } catch (refreshError) {
+        // Silently handle refresh failure — don't show error to user
+        console.warn('Failed to refresh driver list:', refreshError);
         }
+    
+        Alert.alert('Success', 'Driver removed successfully');
+    } catch (error) {
+        Alert.alert('Error', error.message || 'Failed to remove driver');
+    }
     };
 
     const orderKey = (item) => String(item.order_id || item.id);

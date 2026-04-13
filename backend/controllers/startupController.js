@@ -221,6 +221,122 @@ const getOrderDetailsDriver = async (req, res) => {
   }
 };
 
+// Driver: resolve current active/pending order for logged-in driver.
+const getCurrentOrderDriver = async (req, res) => {
+  try {
+    const auth = await getDriverUserId(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ success: false, message: auth.message });
+    }
+
+    const driverId = auth.userId;
+
+    // Clear expired rows before resolving current assignment/order.
+    await query('SELECT cleanup_expired_failures()');
+
+    const currentOrderResult = await query(
+      `WITH candidate_orders AS (
+        SELECT DISTINCT
+          o.order_id,
+          o.status,
+          CASE WHEN o.driver_id = $1 THEN 'active_order' ELSE 'pending_assignment' END AS source
+        FROM orders o
+        LEFT JOIN driver_assignment da
+          ON da.order_id = o.order_id
+         AND da.driver_id = $1
+        WHERE o.status IN ('supplier_timer', 'accepted', 'ride_started', 'reached')
+          AND (
+            o.driver_id = $1
+            OR (
+              o.status = 'supplier_timer'
+              AND da.driver_id = $1
+              AND COALESCE(da.order_rejected, FALSE) = FALSE
+              AND (da.time_limit_for_driver IS NULL OR da.time_limit_for_driver >= CURRENT_TIMESTAMP)
+              AND (o.time_limit_for_supplier IS NULL OR o.time_limit_for_supplier >= CURRENT_TIMESTAMP)
+            )
+          )
+      ),
+      candidate_count AS (
+        SELECT COUNT(*)::int AS total FROM candidate_orders
+      ),
+      picked AS (
+        SELECT order_id, status, source
+        FROM candidate_orders
+        ORDER BY
+          CASE source
+            WHEN 'active_order' THEN 1
+            ELSE 2
+          END,
+          CASE status
+            WHEN 'reached' THEN 1
+            WHEN 'ride_started' THEN 2
+            WHEN 'accepted' THEN 3
+            WHEN 'supplier_timer' THEN 4
+            ELSE 5
+          END,
+          order_id DESC
+        LIMIT 1
+      )
+      SELECT
+        cc.total,
+        p.order_id,
+        p.status,
+        p.source
+      FROM candidate_count cc
+      LEFT JOIN picked p ON TRUE`,
+      [driverId]
+    );
+
+    const summary = currentOrderResult.rows[0];
+    const totalCandidates = Number(summary?.total || 0);
+
+    if (totalCandidates === 0 || !summary?.order_id) {
+      return res.status(404).json({
+        success: false,
+        message: 'No active or pending driver order found'
+      });
+    }
+
+    if (totalCandidates > 1) {
+      return res.status(409).json({
+        success: false,
+        message: 'Multiple current orders found for driver. Data integrity issue.',
+        data: {
+          total_candidates: totalCandidates
+        }
+      });
+    }
+
+    const dbResult = await query('SELECT get_order_details_driver($1, $2) AS result', [
+      driverId,
+      summary.order_id
+    ]);
+    const response = dbResult.rows[0].result;
+
+    if (!response || response.code !== 1) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to fetch current driver order details'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...response,
+        source: summary.source
+      }
+    });
+  } catch (error) {
+    console.error('Get current order (driver) error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch current driver order',
+      error: error.message
+    });
+  }
+};
+
 
 const { query } = require('../config/database');
 
@@ -323,6 +439,18 @@ const getDriverUserId = async (req) => {
   };
 };
 
+// Customer login behavior: auto-clear stale open orders only.
+const clearCustomerOpenOrdersOnLogin = async (customerId) => {
+  if (!customerId) return;
+
+  await query(
+    `DELETE FROM orders
+     WHERE customer_id = $1
+       AND status = 'open'`,
+    [customerId]
+  );
+};
+
 
 // On app Start up
 
@@ -366,6 +494,10 @@ const appStartup = async (req, res) => {
     }
 
     const user = userResult.rows[0];
+
+    if (user.role === 'customer') {
+      await clearCustomerOpenOrdersOnLogin(user.user_id);
+    }
 
     // Route by onboarding state: undefined role must complete details first.
     return res.status(200).json({
@@ -522,6 +654,10 @@ const verifyOTP = async (req, res) => {
         success: false,
         message: response?.message || 'OTP verification failed'
       });
+    }
+
+    if (response.role === 'customer') {
+      await clearCustomerOpenOrdersOnLogin(response.user_id);
     }
 
     // Code 0: OTP verified successfully
@@ -1176,6 +1312,9 @@ const updateCustomerOpenOrderBid = async (req, res) => {
       const statusCode = message.includes('does not belong to you')
         ? 403
         : message.includes('cannot update bid')
+          || message.includes('cannot be lower than original')
+          || message.includes('increase by at least 50')
+          || message.includes('increments of 50')
           ? 409
           : 400;
 
@@ -1478,8 +1617,31 @@ const placeSupplierBid = async (req, res) => {
     if (!Number.isFinite(bidPrice) || bidPrice <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'bid_price must be a positive number'
+        message: 'Bid price must be greater than 0'
       });
+    }
+
+    const customerPriceResult = await query(
+      `SELECT customer_bid_price FROM orders WHERE order_id = $1`,
+      [orderId]
+    );
+    const customerBidPrice = Number(customerPriceResult.rows[0]?.customer_bid_price);
+
+    if (Number.isFinite(customerBidPrice)) {
+      if (bidPrice < customerBidPrice) {
+        return res.status(409).json({
+          success: false,
+          message: "Bid price must be at least customer's offer"
+        });
+      }
+
+      const maxAllowedPrice = customerBidPrice * 1.5;
+      if (bidPrice > maxAllowedPrice) {
+        return res.status(409).json({
+          success: false,
+          message: "Bid price cannot exceed 150% of customer's offer"
+        });
+      }
     }
 
     const supplierDriverAvailabilityResult = await query(
@@ -1499,37 +1661,84 @@ const placeSupplierBid = async (req, res) => {
       });
     }
 
-    const dbResult = await query('SELECT send_bid($1, $2, $3) AS result', [
-      orderId,
-      supplierId,
-      bidPrice
-    ]);
-    const response = dbResult.rows[0].result;
+    const orderResult = await query(
+      `SELECT status, supplier_id
+       FROM orders
+       WHERE order_id = $1`,
+      [orderId]
+    );
 
-    if (!response || response.code !== 1) {
-      const message = (response?.message || '').toString().toLowerCase();
-      const statusCode = response?.retry_after_seconds
-        ? 429
-        : message.includes('not available') || message.includes('capacity')
-          ? 409
-          : 400;
-
-      return res.status(statusCode).json({
+    const order = orderResult.rows[0];
+    if (!order) {
+      return res.status(404).json({
         success: false,
-        message: response?.message || 'Failed to place bid',
-        data: response?.retry_after_seconds
-          ? { retry_after_seconds: response.retry_after_seconds }
-          : undefined
+        message: 'Order not found'
       });
     }
 
+    if (order.status !== 'open' || order.supplier_id !== null) {
+      return res.status(409).json({
+        success: false,
+        message: 'Order is not available for bidding'
+      });
+    }
+
+    await query(
+      `DELETE FROM bids
+       WHERE order_id = $1
+         AND supplier_id = $2
+         AND created_at < (CURRENT_TIMESTAMP - INTERVAL '15 seconds')`,
+      [orderId, supplierId]
+    );
+
+    const recentBidResult = await query(
+      `SELECT created_at
+       FROM bids
+       WHERE order_id = $1
+         AND supplier_id = $2
+         AND created_at >= (CURRENT_TIMESTAMP - INTERVAL '15 seconds')
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [orderId, supplierId]
+    );
+
+    if (recentBidResult.rows.length > 0) {
+      const createdAt = new Date(recentBidResult.rows[0].created_at).getTime();
+      const now = Date.now();
+      const retryAfterSeconds = Math.max(1, Math.ceil((createdAt + 15000 - now) / 1000));
+
+      return res.status(429).json({
+        success: false,
+        message: 'You can send only one bid every 15 seconds for this order',
+        data: {
+          retry_after_seconds: retryAfterSeconds
+        }
+      });
+    }
+
+    const bidUpsertResult = await query(
+      `INSERT INTO bids (order_id, supplier_id, bid_price, created_at)
+       VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+       ON CONFLICT (order_id, supplier_id)
+       DO UPDATE SET
+         bid_price = EXCLUDED.bid_price,
+         created_at = EXCLUDED.created_at
+       RETURNING created_at`,
+      [orderId, supplierId, bidPrice]
+    );
+
+    const createdAt = bidUpsertResult.rows[0]?.created_at
+      ? new Date(bidUpsertResult.rows[0].created_at)
+      : new Date();
+    const expiresAt = new Date(createdAt.getTime() + 15000).toISOString();
+
     return res.status(200).json({
       success: true,
-      message: response.message || 'Bid placed successfully',
+      message: 'Bid placed successfully',
       data: {
         order_id: orderId,
         supplier_id: supplierId,
-        expires_at: response.expires_at || null
+        expires_at: expiresAt
       }
     });
   } catch (error) {
@@ -2703,6 +2912,7 @@ module.exports = {
   orderOpen,
   getOrderDetailsCustomer,
   getOrderDetailsDriver,
+  getCurrentOrderDriver,
   listAvailableOrdersForSupplier,
   viewOneAvailableOrderSupplier,
   placeSupplierBid,

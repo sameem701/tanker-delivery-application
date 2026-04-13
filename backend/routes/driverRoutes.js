@@ -4,6 +4,7 @@ const startupController = require('../controllers/startupController');
 
 // Driver profile completion endpoint.
 router.post('/enter-details', startupController.enterDetailsDriver);
+router.get('/orders/current', startupController.getCurrentOrderDriver);
 router.get('/orders/:orderId/details', startupController.getOrderDetailsDriver);
 router.post('/orders/:orderId/accept', startupController.acceptAssignedOrderForDriver);
 router.post('/orders/:orderId/reject', startupController.rejectAssignedOrderForDriver);

@@ -271,16 +271,16 @@ BEGIN
         );
     END IF;
     
-        -- Remove this bid if it has already expired (90-second validity).
+        -- Remove this bid if it has already expired (15-second validity).
         DELETE FROM bids
         WHERE bid_id = p_bid_id
-            AND created_at < (CURRENT_TIMESTAMP - INTERVAL '90 seconds');
+            AND created_at < (CURRENT_TIMESTAMP - INTERVAL '15 seconds');
 
         -- Get bid details only if still valid.
         SELECT order_id, supplier_id, bid_price INTO v_bid_record
     FROM bids
         WHERE bid_id = p_bid_id
-            AND created_at >= (CURRENT_TIMESTAMP - INTERVAL '90 seconds');
+            AND created_at >= (CURRENT_TIMESTAMP - INTERVAL '15 seconds');
     
     IF NOT FOUND THEN
         RETURN json_build_object(
@@ -368,7 +368,7 @@ $$ LANGUAGE plpgsql;
 -- ============================================================================
 -- FUNCTION: View bids for customer's open order
 -- ============================================================================
--- Purpose: Returns currently valid supplier bids (90-second validity window)
+-- Purpose: Returns currently valid supplier bids (15-second validity window)
 --          for a customer's own order, only while order is still open.
 -- ============================================================================
 CREATE OR REPLACE FUNCTION view_order_bids_customer(
@@ -391,7 +391,7 @@ BEGIN
         -- Remove expired bids first so customer only sees currently valid bids.
     DELETE FROM bids
     WHERE order_id = p_order_id
-            AND created_at < (CURRENT_TIMESTAMP - INTERVAL '90 seconds');
+            AND created_at < (CURRENT_TIMESTAMP - INTERVAL '15 seconds');
 
     SELECT customer_id, status
     INTO v_order_customer_id, v_order_status
@@ -428,14 +428,15 @@ BEGIN
             'supplier_rating', s.rating,
             'bid_price', b.bid_price,
             'created_at', b.created_at,
-            'expires_at', (b.created_at + INTERVAL '90 seconds')
+            'expires_at', (b.created_at + INTERVAL '15 seconds'),
+            'remaining_seconds', GREATEST(0, CEIL(EXTRACT(EPOCH FROM ((b.created_at + INTERVAL '15 seconds') - CURRENT_TIMESTAMP)))::int)
         ) ORDER BY b.bid_price ASC, b.created_at DESC
     ), '[]'::json) INTO v_bids
     FROM bids b
     JOIN users u ON u.user_id = b.supplier_id
     LEFT JOIN suppliers s ON s.user_id = b.supplier_id
     WHERE b.order_id = p_order_id
-    AND b.created_at >= (CURRENT_TIMESTAMP - INTERVAL '90 seconds');
+    AND b.created_at >= (CURRENT_TIMESTAMP - INTERVAL '15 seconds');
 
     RETURN json_build_object(
         'code', 1,
@@ -469,6 +470,8 @@ DECLARE
     v_order_customer_id INTEGER;
     v_order_status VARCHAR(20);
     v_requested_capacity NUMERIC(5,0);
+    v_current_customer_bid_price NUMERIC(10,0);
+    v_increment NUMERIC(10,0);
     v_base_price INTEGER;
     v_min_price NUMERIC(10,2);
     v_max_price NUMERIC(10,2);
@@ -487,8 +490,8 @@ BEGIN
         );
     END IF;
 
-    SELECT customer_id, status, requested_capacity
-    INTO v_order_customer_id, v_order_status, v_requested_capacity
+    SELECT customer_id, status, requested_capacity, customer_bid_price
+    INTO v_order_customer_id, v_order_status, v_requested_capacity, v_current_customer_bid_price
     FROM orders
     WHERE order_id = p_order_id;
 
@@ -534,12 +537,39 @@ BEGIN
         );
     END IF;
 
+    IF p_customer_bid_price < v_current_customer_bid_price THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Updated customer price cannot be lower than original price'
+        );
+    END IF;
+
+    v_increment := p_customer_bid_price - v_current_customer_bid_price;
+
+    IF v_increment < 50 THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Bid update must increase by at least 50'
+        );
+    END IF;
+
+    IF MOD(v_increment, 50) <> 0 THEN
+        RETURN json_build_object(
+            'code', 0,
+            'message', 'Bid update must be in increments of 50'
+        );
+    END IF;
+
     UPDATE orders
     SET customer_bid_price = p_customer_bid_price,
         updated_at = CURRENT_TIMESTAMP
     WHERE order_id = p_order_id
       AND customer_id = p_customer_id
       AND status = 'open';
+
+    -- Invalidate all existing supplier bids once customer changes asking price.
+    DELETE FROM bids
+    WHERE order_id = p_order_id;
 
     RETURN json_build_object(
         'code', 1,

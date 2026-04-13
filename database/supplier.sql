@@ -671,29 +671,29 @@ BEGIN
         );
     END IF;
     
-        -- Expire old bids from this supplier on this order after 90 seconds.
+        -- Expire old bids from this supplier on this order after 15 seconds.
     DELETE FROM bids
     WHERE order_id = p_order_id
       AND supplier_id = p_supplier_id
-            AND created_at < (CURRENT_TIMESTAMP - INTERVAL '90 seconds');
+            AND created_at < (CURRENT_TIMESTAMP - INTERVAL '15 seconds');
 
-        -- Enforce cooldown: one bid per 90 seconds per supplier per order.
+        -- Enforce cooldown: one bid per 15 seconds per supplier per order.
     SELECT created_at
     INTO v_existing_bid_created_at
     FROM bids
     WHERE order_id = p_order_id
       AND supplier_id = p_supplier_id
-            AND created_at >= (CURRENT_TIMESTAMP - INTERVAL '90 seconds')
+            AND created_at >= (CURRENT_TIMESTAMP - INTERVAL '15 seconds')
     ORDER BY created_at DESC
     LIMIT 1;
 
     IF FOUND THEN
-                v_wait_seconds := CEIL(EXTRACT(EPOCH FROM ((v_existing_bid_created_at + INTERVAL '90 seconds') - CURRENT_TIMESTAMP)));
+                v_wait_seconds := CEIL(EXTRACT(EPOCH FROM ((v_existing_bid_created_at + INTERVAL '15 seconds') - CURRENT_TIMESTAMP)));
         v_wait_seconds := GREATEST(v_wait_seconds, 1);
 
         RETURN json_build_object(
             'code', 0,
-                        'message', 'You can send only one bid every 90 seconds for this order',
+                        'message', 'You can send only one bid every 15 seconds for this order',
             'retry_after_seconds', v_wait_seconds
         );
     END IF;
@@ -718,7 +718,7 @@ BEGIN
     RETURN json_build_object(
         'code', 1,
         'message', 'Bid placed successfully',
-        'expires_at', (CURRENT_TIMESTAMP + INTERVAL '90 seconds')
+        'expires_at', (CURRENT_TIMESTAMP + INTERVAL '15 seconds')
     );
     
 EXCEPTION
