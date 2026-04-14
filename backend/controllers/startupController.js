@@ -49,8 +49,10 @@ const rejectBidCustomer = async (req, res) => {
 
 
 
-// Customer: view order details with timer and status checks
-const getOrderDetailsCustomer = async (req, res) => {
+
+
+// Customer: resolve current active order and include supplier timer details when applicable.
+const getCurrentOrderCustomer = async (req, res) => {
   try {
     const auth = await getCustomerUserId(req);
     if (!auth.ok) {
@@ -58,100 +60,121 @@ const getOrderDetailsCustomer = async (req, res) => {
     }
 
     const customerId = auth.userId;
-    const orderId = Number(req.params.orderId);
-    if (!Number.isInteger(orderId) || orderId <= 0) {
-      return res.status(400).json({ success: false, message: 'orderId must be a positive integer' });
-    }
 
-    // Fetch order status and timer info
-    const orderResult = await query(
-      `SELECT status, time_limit_for_supplier FROM orders WHERE order_id = $1 AND customer_id = $2`,
-      [orderId, customerId]
+    await query('SELECT cleanup_expired_failures()');
+
+    const currentOrderResult = await query(
+      `WITH candidate_orders AS (
+         SELECT
+           o.order_id,
+           o.status,
+           o.time_limit_for_supplier,
+           o.created_at
+         FROM orders o
+         WHERE o.customer_id = $1
+           AND (
+             o.status = 'open'
+             OR o.status IN ('accepted', 'ride_started', 'reached')
+             OR (
+               o.status = 'supplier_timer'
+               AND (o.time_limit_for_supplier IS NULL OR o.time_limit_for_supplier >= CURRENT_TIMESTAMP)
+             )
+           )
+       ),
+       candidate_count AS (
+         SELECT COUNT(*)::int AS total FROM candidate_orders
+       ),
+       picked AS (
+         SELECT order_id, status, time_limit_for_supplier
+         FROM candidate_orders
+         ORDER BY
+           CASE status
+             WHEN 'reached' THEN 1
+             WHEN 'ride_started' THEN 2
+             WHEN 'accepted' THEN 3
+             WHEN 'supplier_timer' THEN 4
+             WHEN 'open' THEN 5
+             ELSE 6
+           END,
+           created_at DESC,
+           order_id DESC
+         LIMIT 1
+       )
+       SELECT
+         cc.total,
+         p.order_id,
+         p.status,
+         p.time_limit_for_supplier,
+         CASE
+           WHEN p.time_limit_for_supplier IS NULL THEN NULL
+           ELSE GREATEST(0, CEIL(EXTRACT(EPOCH FROM (p.time_limit_for_supplier - CURRENT_TIMESTAMP))))::int
+         END AS remaining_supplier_seconds
+       FROM candidate_count cc
+       LEFT JOIN picked p ON TRUE`,
+      [customerId]
     );
-    const order = orderResult.rows[0];
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found or does not belong to you' });
-    }
 
-    // If finished, direct to rating
-    if (order.status === 'finished') {
-      return res.status(409).json({
+    const summary = currentOrderResult.rows[0];
+    const totalCandidates = Number(summary?.total || 0);
+
+    if (totalCandidates === 0 || !summary?.order_id) {
+      return res.status(404).json({
         success: false,
-        message: 'Order is finished. Please submit a rating.',
-        next_screen: 'submit_rating'
+        message: 'No active customer order found'
       });
     }
 
-    // Check supplier timer expiry (if in supplier_timer or later)
-    if (order.status === 'supplier_timer' || order.status === 'accepted' || order.status === 'ride_started' || order.status === 'reached') {
-      if (order.time_limit_for_supplier && new Date(order.time_limit_for_supplier) < new Date()) {
-        return res.status(410).json({
-          success: false,
-          message: 'Order expired, make a new order.'
-        });
+    if (totalCandidates > 1) {
+      return res.status(409).json({
+        success: false,
+        message: 'Multiple current orders found for customer. Data integrity issue.',
+        data: {
+          total_candidates: totalCandidates
+        }
+      });
+    }
+
+    let response;
+
+    if (summary.status === 'open') {
+      const dbResult = await query('SELECT orderOpen($1, $2) AS result', [customerId, summary.order_id]);
+      response = dbResult.rows[0].result;
+    } else {
+      const dbResult = await query('SELECT get_order_details_customer($1, $2) AS result', [
+        customerId,
+        summary.order_id
+      ]);
+      response = dbResult.rows[0].result;
+    }
+
+    if (!response || response.code !== 1) {
+      return res.status(400).json({
+        success: false,
+        message: response?.message || 'Failed to fetch current customer order details'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...response,
+        time_limit_for_supplier: summary.time_limit_for_supplier || null,
+        remaining_supplier_seconds: Number.isFinite(Number(summary.remaining_supplier_seconds))
+          ? Number(summary.remaining_supplier_seconds)
+          : null
       }
-    }
-
-    // Only allow viewing from supplier_timer onwards
-    const allowedStatuses = ['supplier_timer', 'accepted', 'ride_started', 'reached'];
-    if (!allowedStatuses.includes(order.status)) {
-      return res.status(403).json({ success: false, message: 'Order not available for viewing at this stage.' });
-    }
-
-    // Fetch details from DB function
-    const dbResult = await query('SELECT get_order_details_customer($1, $2) AS result', [customerId, orderId]);
-    const response = dbResult.rows[0].result;
-    if (!response || response.code !== 1) {
-      return res.status(400).json({ success: false, message: response?.message || 'Failed to fetch order details' });
-    }
-    return res.status(200).json({ success: true, data: response });
+    });
   } catch (error) {
-    console.error('Get order details (customer) error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to fetch order details', error: error.message });
+    console.error('Get current order (customer) error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch current customer order',
+      error: error.message
+    });
   }
 };
 
-// Customer: view minimum details for an open order
-const orderOpen = async (req, res) => {
-  try {
-    const auth = await getCustomerUserId(req);
-    if (!auth.ok) {
-      return res.status(auth.status).json({ success: false, message: auth.message });
-    }
 
-    const customerId = auth.userId;
-    const orderId = Number(req.params.orderId);
-    if (!Number.isInteger(orderId) || orderId <= 0) {
-      return res.status(400).json({ success: false, message: 'orderId must be a positive integer' });
-    }
-
-    const orderResult = await query(
-      `SELECT status FROM orders WHERE order_id = $1 AND customer_id = $2`,
-      [orderId, customerId]
-    );
-
-    const order = orderResult.rows[0];
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found or does not belong to you' });
-    }
-
-    if (order.status !== 'open') {
-      return res.status(409).json({ success: false, message: 'Order is no longer open' });
-    }
-
-    const dbResult = await query('SELECT orderOpen($1, $2) AS result', [customerId, orderId]);
-    const response = dbResult.rows[0].result;
-
-    if (!response || response.code !== 1) {
-      return res.status(400).json({ success: false, message: response?.message || 'Failed to fetch open order details' });
-    }
-
-    return res.status(200).json({ success: true, data: response });
-  } catch (error) {
-    console.error('Get open order details error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to fetch order details', error: error.message });
-  }
-};
 
 // Driver: view order details with timer and status checks
 const getOrderDetailsDriver = async (req, res) => {
@@ -1661,84 +1684,42 @@ const placeSupplierBid = async (req, res) => {
       });
     }
 
-    const orderResult = await query(
-      `SELECT status, supplier_id
-       FROM orders
-       WHERE order_id = $1`,
-      [orderId]
-    );
+    const dbResult = await query('SELECT send_bid($1, $2, $3) AS result', [
+      orderId,
+      supplierId,
+      bidPrice
+    ]);
+    const response = dbResult.rows[0].result;
 
-    const order = orderResult.rows[0];
-    if (!order) {
-      return res.status(404).json({
+    if (!response || response.code !== 1) {
+      const message = (response?.message || '').toString().toLowerCase();
+      const statusCode = response?.retry_after_seconds
+        ? 429
+        : message.includes('order not found')
+          ? 404
+          : message.includes('not available')
+            || message.includes('capacity')
+            || message.includes('at least customer')
+            || message.includes('150%')
+            ? 409
+            : 400;
+
+      return res.status(statusCode).json({
         success: false,
-        message: 'Order not found'
+        message: response?.message || 'Failed to place bid',
+        data: response?.retry_after_seconds
+          ? { retry_after_seconds: response.retry_after_seconds }
+          : undefined
       });
     }
-
-    if (order.status !== 'open' || order.supplier_id !== null) {
-      return res.status(409).json({
-        success: false,
-        message: 'Order is not available for bidding'
-      });
-    }
-
-    await query(
-      `DELETE FROM bids
-       WHERE order_id = $1
-         AND supplier_id = $2
-         AND created_at < (CURRENT_TIMESTAMP - INTERVAL '15 seconds')`,
-      [orderId, supplierId]
-    );
-
-    const recentBidResult = await query(
-      `SELECT created_at
-       FROM bids
-       WHERE order_id = $1
-         AND supplier_id = $2
-         AND created_at >= (CURRENT_TIMESTAMP - INTERVAL '15 seconds')
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [orderId, supplierId]
-    );
-
-    if (recentBidResult.rows.length > 0) {
-      const createdAt = new Date(recentBidResult.rows[0].created_at).getTime();
-      const now = Date.now();
-      const retryAfterSeconds = Math.max(1, Math.ceil((createdAt + 15000 - now) / 1000));
-
-      return res.status(429).json({
-        success: false,
-        message: 'You can send only one bid every 15 seconds for this order',
-        data: {
-          retry_after_seconds: retryAfterSeconds
-        }
-      });
-    }
-
-    const bidUpsertResult = await query(
-      `INSERT INTO bids (order_id, supplier_id, bid_price, created_at)
-       VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-       ON CONFLICT (order_id, supplier_id)
-       DO UPDATE SET
-         bid_price = EXCLUDED.bid_price,
-         created_at = EXCLUDED.created_at
-       RETURNING created_at`,
-      [orderId, supplierId, bidPrice]
-    );
-
-    const createdAt = bidUpsertResult.rows[0]?.created_at
-      ? new Date(bidUpsertResult.rows[0].created_at)
-      : new Date();
-    const expiresAt = new Date(createdAt.getTime() + 15000).toISOString();
 
     return res.status(200).json({
       success: true,
-      message: 'Bid placed successfully',
+      message: response.message || 'Bid placed successfully',
       data: {
         order_id: orderId,
         supplier_id: supplierId,
-        expires_at: expiresAt
+        expires_at: response.expires_at || null
       }
     });
   } catch (error) {
@@ -2909,8 +2890,7 @@ module.exports = {
   acceptSupplierBidForCustomer,
   rejectBidCustomer,
   submitOrderRatingForCustomer,
-  orderOpen,
-  getOrderDetailsCustomer,
+  getCurrentOrderCustomer,
   getOrderDetailsDriver,
   getCurrentOrderDriver,
   listAvailableOrdersForSupplier,

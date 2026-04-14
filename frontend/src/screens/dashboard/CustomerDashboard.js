@@ -1,11 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, TextInput, Alert } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import {
   getCustomerQuantityPricing,
   startCustomerOrder,
   cancelCustomerOrder,
-  getCustomerOpenOrder,
+  getCurrentCustomerOrder,
   listCustomerOrderBids,
   updateCustomerOrderBid,
   acceptCustomerBid,
@@ -24,6 +24,7 @@ const FALLBACK_QUANTITY_PRICING = [
 ];
 
 const CUSTOMER_CANCELABLE_STATUSES = ['open', 'supplier_timer', 'accepted', 'ride_started', 'reached'];
+const CUSTOMER_TRACKED_STATUSES = ['supplier_timer', 'accepted', 'ride_started', 'reached'];
 const BID_WINDOW_SECONDS = 15;
 
 export default function CustomerDashboard({ sessionToken }) {
@@ -33,10 +34,108 @@ export default function CustomerDashboard({ sessionToken }) {
   const [quantityPricing, setQuantityPricing] = useState(FALLBACK_QUANTITY_PRICING);
   const [loadingPricing, setLoadingPricing] = useState(true);
   const [loadingBids, setLoadingBids] = useState(false);
+  const [loadingCurrentOrder, setLoadingCurrentOrder] = useState(true);
 
   const [address, setAddress] = useState('');
   const [gallons, setGallons] = useState('1000');
   const [price, setPrice] = useState('');
+
+  const formatDuration = (secondsRaw) => {
+    const totalSeconds = Math.max(0, Number(secondsRaw || 0));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  };
+
+  const getRemainingSupplierSeconds = (order) => {
+    const directRemaining = Number(order?.remaining_supplier_seconds);
+    if (Number.isFinite(directRemaining) && directRemaining >= 0) {
+      return Math.floor(directRemaining);
+    }
+
+    if (!order?.time_limit_for_supplier) {
+      return 0;
+    }
+
+    const timeLimit = new Date(order.time_limit_for_supplier).getTime();
+    if (Number.isNaN(timeLimit)) {
+      return 0;
+    }
+
+    return Math.max(0, Math.ceil((timeLimit - Date.now()) / 1000));
+  };
+
+  const normalizeOrder = (details, fallback = {}) => ({
+    id: String(details?.order_id || fallback.id || ''),
+    address: details?.delivery_location || fallback.address || '',
+    gallons: String(details?.quantity || details?.requested_capacity || fallback.gallons || ''),
+    price: String(
+      details?.status === 'open'
+        ? details?.customer_bid_price ?? fallback.price ?? ''
+        : details?.accepted_price ?? fallback.price ?? ''
+    ),
+    status: details?.status || fallback.status || 'open',
+    time_limit_for_supplier: details?.time_limit_for_supplier || null,
+    remaining_supplier_seconds: details?.remaining_supplier_seconds,
+    supplier_name: details?.supplier_name || null,
+    supplier_business_contact: details?.supplier_business_contact || null,
+    supplier_yard_location: details?.supplier_yard_location || null,
+    driver_name: details?.driver_name || null,
+    driver_phone: details?.driver_phone || null
+  });
+
+  const loadCurrentOrder = useCallback(async () => {
+    if (!sessionToken) {
+      setActiveOrder(null);
+      setBids([]);
+      setBidUpdatePrice('');
+      return;
+    }
+
+    try {
+      const response = await getCurrentCustomerOrder(sessionToken);
+      const normalized = normalizeOrder(response?.data || {});
+      setActiveOrder(normalized);
+
+      if (normalized.status === 'open') {
+        setBidUpdatePrice(normalized.price || '');
+      } else {
+        setBids([]);
+      }
+    } catch (error) {
+      if (error.status === 404 || error.status === 410) {
+        setActiveOrder(null);
+        setBids([]);
+        setBidUpdatePrice('');
+        return;
+      }
+
+      console.log('Current order fetch failed:', error.message);
+    }
+  }, [sessionToken]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const bootstrapCurrentOrder = async () => {
+      if (!sessionToken) {
+        setLoadingCurrentOrder(false);
+        return;
+      }
+
+      setLoadingCurrentOrder(true);
+      await loadCurrentOrder();
+      if (mounted) {
+        setLoadingCurrentOrder(false);
+      }
+    };
+
+    bootstrapCurrentOrder();
+
+    return () => {
+      mounted = false;
+    };
+  }, [sessionToken, loadCurrentOrder]);
 
   useEffect(() => {
     const fetchPricing = async () => {
@@ -108,36 +207,6 @@ export default function CustomerDashboard({ sessionToken }) {
     return 0;
   };
 
-  const hydrateOpenOrder = async (orderId, fallback = {}) => {
-    if (!sessionToken) return;
-    if (!orderId) return;
-
-    try {
-      const response = await getCustomerOpenOrder(sessionToken, Number(orderId));
-      const details = response?.data || {};
-
-      const normalized = {
-        id: String(details.order_id || orderId),
-        address: details.delivery_location || fallback.address || '',
-        gallons: String(details.quantity || fallback.gallons || ''),
-        price: String(details.customer_bid_price || fallback.price || ''),
-        status: details.status || fallback.status || 'open'
-      };
-
-      setActiveOrder(normalized);
-      setBidUpdatePrice(normalized.price);
-    } catch (error) {
-      setActiveOrder({
-        id: String(orderId),
-        address: fallback.address || '',
-        gallons: String(fallback.gallons || ''),
-        price: String(fallback.price || ''),
-        status: fallback.status || 'open'
-      });
-      setBidUpdatePrice(String(fallback.price || ''));
-    }
-  };
-
   const fetchBids = async (orderIdValue) => {
     if (!sessionToken) return;
     if (!orderIdValue) return;
@@ -168,6 +237,18 @@ export default function CustomerDashboard({ sessionToken }) {
 
     return () => clearInterval(interval);
   }, [sessionToken, activeOrder?.id, activeOrder?.status]);
+
+  useEffect(() => {
+    if (!sessionToken) return;
+    if (!activeOrder?.id) return;
+    if (!CUSTOMER_TRACKED_STATUSES.includes(activeOrder.status)) return;
+
+    const intervalId = setInterval(() => {
+      loadCurrentOrder();
+    }, 1000);
+
+    return () => clearInterval(intervalId);
+  }, [sessionToken, activeOrder?.id, activeOrder?.status, loadCurrentOrder]);
 
   const handleStartOrder = async () => {
     if (!sessionToken) {
@@ -208,27 +289,15 @@ export default function CustomerDashboard({ sessionToken }) {
     }
 
     try {
-      const response = await startCustomerOrder(sessionToken, {
+      await startCustomerOrder(sessionToken, {
         delivery_location: address.trim(),
         requested_capacity: Number(gallons),
         customer_bid_price: Number(price)
       });
-
-      const newOrderId = response?.data?.order_id;
-      await hydrateOpenOrder(newOrderId, {
-        address: address.trim(),
-        gallons,
-        price,
-        status: 'open'
-      });
+      await loadCurrentOrder();
     } catch (error) {
       if (error.status === 409 && error?.payload?.data?.active_order_id) {
-        await hydrateOpenOrder(error.payload.data.active_order_id, {
-          address: address.trim() || 'Existing order',
-          gallons,
-          price,
-          status: error.payload.data.active_order_status || 'active'
-        });
+        await loadCurrentOrder();
         return;
       }
 
@@ -323,7 +392,7 @@ export default function CustomerDashboard({ sessionToken }) {
     const orderId = Number(activeOrder?.id);
     try {
       await acceptCustomerBid(sessionToken, orderId, Number(bidId));
-      setActiveOrder((prev) => ({ ...prev, status: 'supplier_timer' }));
+      await loadCurrentOrder();
       setBids([]);
       Alert.alert('Success', 'Bid accepted successfully');
     } catch (error) {
@@ -348,7 +417,19 @@ export default function CustomerDashboard({ sessionToken }) {
 
   const visibleBids = bids.filter((item) => getRemainingSeconds(item) > 0);
 
+  if (loadingCurrentOrder) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+        <View style={{ width: '90%', maxWidth: 420 }}>
+          <Text>Checking active order...</Text>
+        </View>
+      </View>
+    );
+  }
+
   if (activeOrder) {
+    const supplierTimeLeftSeconds = getRemainingSupplierSeconds(activeOrder);
+
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
         <View style={{ width: '90%', maxWidth: 420 }}>
@@ -358,6 +439,26 @@ export default function CustomerDashboard({ sessionToken }) {
           <Text>Gallons: {activeOrder.gallons}</Text>
           <Text>Price: {activeOrder.price}</Text>
           <Text>Status: {activeOrder.status}</Text>
+
+          {activeOrder.status === 'supplier_timer' ? (
+            <View style={{ borderWidth: 1, marginTop: 8, padding: 8 }}>
+              <Text>Supplier Confirmation Window</Text>
+              <Text>Time Left: {formatDuration(supplierTimeLeftSeconds)}</Text>
+              <Text>Supplier: {activeOrder.supplier_name || '-'}</Text>
+              <Text>Supplier Contact: {activeOrder.supplier_business_contact || '-'}</Text>
+              <Text>Supplier Yard: {activeOrder.supplier_yard_location || '-'}</Text>
+            </View>
+          ) : null}
+
+          {activeOrder.status === 'accepted' || activeOrder.status === 'ride_started' || activeOrder.status === 'reached' ? (
+            <View style={{ borderWidth: 1, marginTop: 8, padding: 8 }}>
+              <Text>Order Progress Details</Text>
+              <Text>Supplier: {activeOrder.supplier_name || '-'}</Text>
+              <Text>Supplier Contact: {activeOrder.supplier_business_contact || '-'}</Text>
+              <Text>Driver: {activeOrder.driver_name || 'Not assigned yet'}</Text>
+              <Text>Driver Phone: {activeOrder.driver_phone || '-'}</Text>
+            </View>
+          ) : null}
 
           {activeOrder.status === 'open' ? (
             <View>

@@ -22,8 +22,8 @@ export function cancelCustomerOrder(token, orderId) {
     });
 }
 
-export function getCustomerOpenOrder(token, orderId) {
-    return apiRequest(`/customer/orders/${orderId}/open`, {
+export function getCurrentCustomerOrder(token) {
+    return apiRequest('/customer/orders/current', {
         method: 'GET',
         token,
     });
