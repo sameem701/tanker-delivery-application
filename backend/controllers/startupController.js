@@ -190,12 +190,25 @@ const getOrderDetailsDriver = async (req, res) => {
       return res.status(400).json({ success: false, message: 'orderId must be a positive integer' });
     }
 
-    // Fetch order status and timer info
+    // Fetch order status and timer info using SQL-side timestamp comparison (timezone-safe)
     const orderResult = await query(
       `SELECT 
         o.status, 
-        o.time_limit_for_supplier, 
-        da.time_limit_for_driver 
+        o.time_limit_for_supplier,
+        da.time_limit_for_driver,
+        (o.status = 'supplier_timer'
+         AND o.time_limit_for_supplier IS NOT NULL
+         AND CURRENT_TIMESTAMP > o.time_limit_for_supplier) AS supplier_timer_expired,
+        (da.time_limit_for_driver IS NOT NULL
+         AND CURRENT_TIMESTAMP > da.time_limit_for_driver) AS driver_timer_expired,
+        CASE
+          WHEN o.time_limit_for_supplier IS NULL THEN NULL
+          ELSE GREATEST(0, CEIL(EXTRACT(EPOCH FROM (o.time_limit_for_supplier - CURRENT_TIMESTAMP))))::int
+        END AS remaining_supplier_seconds,
+        CASE
+          WHEN da.time_limit_for_driver IS NULL THEN NULL
+          ELSE GREATEST(0, CEIL(EXTRACT(EPOCH FROM (da.time_limit_for_driver - CURRENT_TIMESTAMP))))::int
+        END AS remaining_driver_seconds
       FROM orders o 
       LEFT JOIN driver_assignment da ON o.order_id = da.order_id AND da.driver_id = $2
       WHERE o.order_id = $1 AND (o.driver_id = $2 OR da.driver_id = $2)`,
@@ -214,13 +227,12 @@ const getOrderDetailsDriver = async (req, res) => {
       });
     }
 
-    // Check timer expiry
-    const now = new Date();
+    // Check timer expiry using DB-computed booleans
     if (order.status === 'supplier_timer') {
-      if (order.time_limit_for_supplier && new Date(order.time_limit_for_supplier) < now) {
+      if (order.supplier_timer_expired) {
         return res.status(410).json({ success: false, message: 'Supplier time limit has expired.' });
       }
-      if (order.time_limit_for_driver && new Date(order.time_limit_for_driver) < now) {
+      if (order.driver_timer_expired) {
         return res.status(410).json({ success: false, message: 'Driver assignment time limit has expired.' });
       }
     }
@@ -237,7 +249,15 @@ const getOrderDetailsDriver = async (req, res) => {
     if (!response || response.code !== 1) {
       return res.status(400).json({ success: false, message: response?.message || 'Failed to fetch order details' });
     }
-    return res.status(200).json({ success: true, data: response });
+    return res.status(200).json({
+      success: true, data: {
+        ...response,
+        remaining_supplier_seconds: Number.isFinite(Number(order.remaining_supplier_seconds))
+          ? Number(order.remaining_supplier_seconds) : null,
+        remaining_driver_seconds: Number.isFinite(Number(order.remaining_driver_seconds))
+          ? Number(order.remaining_driver_seconds) : null
+      }
+    });
   } catch (error) {
     console.error('Get order details (driver) error:', error);
     return res.status(500).json({ success: false, message: 'Failed to fetch order details', error: error.message });
@@ -343,11 +363,33 @@ const getCurrentOrderDriver = async (req, res) => {
       });
     }
 
+    // Fetch timer values SQL-side for the resolved order
+    const timerResult = await query(
+      `SELECT
+        CASE
+          WHEN o.time_limit_for_supplier IS NULL THEN NULL
+          ELSE GREATEST(0, CEIL(EXTRACT(EPOCH FROM (o.time_limit_for_supplier - CURRENT_TIMESTAMP))))::int
+        END AS remaining_supplier_seconds,
+        CASE
+          WHEN da.time_limit_for_driver IS NULL THEN NULL
+          ELSE GREATEST(0, CEIL(EXTRACT(EPOCH FROM (da.time_limit_for_driver - CURRENT_TIMESTAMP))))::int
+        END AS remaining_driver_seconds
+       FROM orders o
+       LEFT JOIN driver_assignment da ON da.order_id = o.order_id AND da.driver_id = $2
+       WHERE o.order_id = $1`,
+      [summary.order_id, driverId]
+    );
+    const timers = timerResult.rows[0] || {};
+
     return res.status(200).json({
       success: true,
       data: {
         ...response,
-        source: summary.source
+        source: summary.source,
+        remaining_supplier_seconds: Number.isFinite(Number(timers.remaining_supplier_seconds))
+          ? Number(timers.remaining_supplier_seconds) : null,
+        remaining_driver_seconds: Number.isFinite(Number(timers.remaining_driver_seconds))
+          ? Number(timers.remaining_driver_seconds) : null
       }
     });
   } catch (error) {
@@ -1793,7 +1835,15 @@ const viewOneActiveOrderSupplier = async (req, res) => {
     }
 
     const orderResult = await query(
-      `SELECT status, time_limit_for_supplier FROM orders WHERE order_id = $1 AND supplier_id = $2`,
+      `SELECT status, time_limit_for_supplier,
+          (status = 'supplier_timer'
+           AND time_limit_for_supplier IS NOT NULL
+           AND CURRENT_TIMESTAMP > time_limit_for_supplier) AS supplier_timer_expired,
+          CASE
+            WHEN time_limit_for_supplier IS NULL THEN NULL
+            ELSE GREATEST(0, CEIL(EXTRACT(EPOCH FROM (time_limit_for_supplier - CURRENT_TIMESTAMP))))::int
+          END AS remaining_supplier_seconds
+       FROM orders WHERE order_id = $1 AND supplier_id = $2`,
       [orderId, supplierId]
     );
     const order = orderResult.rows[0];
@@ -1806,10 +1856,8 @@ const viewOneActiveOrderSupplier = async (req, res) => {
       return res.status(409).json({ success: false, message: `Order is no longer active (status: ${order.status})` });
     }
 
-    if (order.status === 'supplier_timer') {
-      if (order.time_limit_for_supplier && new Date(order.time_limit_for_supplier) < new Date()) {
-        return res.status(410).json({ success: false, message: 'Supplier time limit has expired for this order' });
-      }
+    if (order.supplier_timer_expired) {
+      return res.status(410).json({ success: false, message: 'Supplier time limit has expired for this order' });
     }
 
     const dbResult = await query('SELECT view_one_active_order_supplier($1, $2) AS result', [
@@ -1830,7 +1878,13 @@ const viewOneActiveOrderSupplier = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: response
+      data: {
+        ...response,
+        time_limit_for_supplier: order.time_limit_for_supplier || null,
+        remaining_supplier_seconds: Number.isFinite(Number(order.remaining_supplier_seconds))
+          ? Number(order.remaining_supplier_seconds)
+          : null
+      }
     });
   } catch (error) {
     console.error('Get active supplier order details error:', error);

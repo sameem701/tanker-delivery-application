@@ -51,3 +51,32 @@ export function removeSupplierDriver(token, driverPhoneNum) {
         body: { driver_phone_num: driverPhoneNum },
     });
 }
+
+export function getActiveSupplierOrderDetails(token, orderId) {
+    return apiRequest(`/supplier/orders/active/${orderId}`, {
+        method: 'GET',
+        token,
+    });
+}
+
+export function getAssignableDriversForOrder(token, orderId) {
+    return apiRequest(`/supplier/orders/active/${orderId}/drivers`, {
+        method: 'GET',
+        token,
+    });
+}
+
+export function assignDriverToOrder(token, orderId, driverId) {
+    return apiRequest(`/supplier/orders/active/${orderId}/assign-driver`, {
+        method: 'POST',
+        token,
+        body: { driver_id: driverId },
+    });
+}
+
+export function cancelSupplierOrder(token, orderId) {
+    return apiRequest(`/supplier/orders/active/${orderId}/cancel`, {
+        method: 'POST',
+        token,
+    });
+}

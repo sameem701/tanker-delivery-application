@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, TextInput, Alert, ScrollView, StyleSheet } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { View, Text, Alert, ScrollView, StyleSheet } from 'react-native';
 import BasicButton from '../../components/ui/BasicButton';
 import {
+  getCurrentDriverOrder,
   getDriverOrderDetails,
   acceptDriverOrder,
   rejectDriverOrder,
@@ -13,39 +14,90 @@ import {
   getDriverHistoryDetails,
 } from '../../api/driverApi';
 
+function formatSeconds(secs) {
+  if (secs == null || secs < 0) return '00:00';
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 export default function DriverDashboard({ sessionToken }) {
   const [activeTab, setActiveTab] = useState('task'); // task | history
-  const [orderIdInput, setOrderIdInput] = useState('');
-  const [currentOrderId, setCurrentOrderId] = useState(null);
-  const [taskDetails, setTaskDetails] = useState(null);
-  const [taskError, setTaskError] = useState('');
+  const [currentOrder, setCurrentOrder] = useState(null); // full order data + source + timers
+  const [taskMessage, setTaskMessage] = useState('');
   const [loadingTask, setLoadingTask] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+
+  // Local countdown tick applied on top of server-provided remaining seconds
+  const [supplierTimerTick, setSupplierTimerTick] = useState(0);
+  const [driverTimerTick, setDriverTimerTick] = useState(0);
 
   const [historyOrders, setHistoryOrders] = useState([]);
   const [historyDetails, setHistoryDetails] = useState(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  const fetchTaskDetails = async (orderIdValue) => {
+  // Load (or refresh) the driver's current order via getCurrentDriverOrder
+  const loadCurrentOrder = useCallback(async () => {
     if (!sessionToken) return;
-    if (!orderIdValue) return;
-
     try {
       setLoadingTask(true);
-      setTaskError('');
-      const response = await getDriverOrderDetails(sessionToken, orderIdValue);
-      setTaskDetails(response?.data || null);
+      setTaskMessage('');
+      const response = await getCurrentDriverOrder(sessionToken);
+      const data = response?.data;
+      if (!data) {
+        setCurrentOrder(null);
+        return;
+      }
+      setCurrentOrder(data);
+      // Reset local tick counters when fresh server data arrives
+      setSupplierTimerTick(0);
+      setDriverTimerTick(0);
     } catch (error) {
-      setTaskDetails(null);
-      setTaskError(error.message || 'Failed to load current task');
+      // 404 means no current order
+      if (error?.status === 404 || /no (current|active|pending)/i.test(error?.message || '')) {
+        setCurrentOrder(null);
+      } else {
+        setTaskMessage(error.message || 'Failed to load current task');
+      }
     } finally {
       setLoadingTask(false);
     }
-  };
+  }, [sessionToken]);
+
+  // Polling: when in supplier_timer phase (pending assignment), poll every 3s
+  useEffect(() => {
+    if (!sessionToken || activeTab !== 'task') return;
+    loadCurrentOrder();
+
+    const isPendingPhase = currentOrder?.status === 'supplier_timer' && currentOrder?.source === 'pending_assignment';
+    const isActivePhase = ['accepted', 'ride_started', 'reached'].includes(currentOrder?.status);
+
+    if (!isPendingPhase && !isActivePhase) return;
+
+    const interval = setInterval(loadCurrentOrder, isPendingPhase ? 3000 : 5000);
+    return () => clearInterval(interval);
+  }, [sessionToken, activeTab, currentOrder?.status, currentOrder?.source]);
+
+  // Local countdown ticks: decrement every second while in supplier_timer phase
+  useEffect(() => {
+    if (currentOrder?.status !== 'supplier_timer') return;
+    if (currentOrder?.source !== 'pending_assignment') return;
+
+    const tick = setInterval(() => {
+      setSupplierTimerTick(t => t + 1);
+      setDriverTimerTick(t => t + 1);
+    }, 1000);
+    return () => clearInterval(tick);
+  }, [currentOrder?.status, currentOrder?.source]);
+
+  // Fetch history on tab switch
+  useEffect(() => {
+    if (!sessionToken || activeTab !== 'history') return;
+    fetchHistory();
+  }, [sessionToken, activeTab]);
 
   const fetchHistory = async () => {
     if (!sessionToken) return;
-
     try {
       setLoadingHistory(true);
       const response = await listDriverHistory(sessionToken);
@@ -57,49 +109,64 @@ export default function DriverDashboard({ sessionToken }) {
     }
   };
 
-  useEffect(() => {
-    if (!sessionToken) return;
-    if (activeTab !== 'task') return;
-    if (!currentOrderId) return;
+  const handleAccept = () => {
+    if (!sessionToken || !currentOrder?.order_id) return;
+    Alert.alert(
+      'Accept Order',
+      'Are you sure you want to accept this order?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Confirm',
+          onPress: async () => {
+            try {
+              setActionLoading(true);
+              await acceptDriverOrder(sessionToken, currentOrder.order_id);
+              await loadCurrentOrder();
+            } catch (error) {
+              Alert.alert('Error', error.message || 'Failed to accept order');
+            } finally {
+              setActionLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  };
 
-    fetchTaskDetails(currentOrderId);
-
-    const interval = setInterval(() => {
-      fetchTaskDetails(currentOrderId);
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [sessionToken, activeTab, currentOrderId]);
-
-  useEffect(() => {
-    if (!sessionToken) return;
-    if (activeTab !== 'history') return;
-    fetchHistory();
-  }, [sessionToken, activeTab]);
-
-  const handleLoadOrder = () => {
-    const parsed = Number(orderIdInput);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      Alert.alert('Error', 'Enter a valid order ID');
-      return;
-    }
-
-    setCurrentOrderId(parsed);
-    setTaskDetails(null);
-    setTaskError('');
-    fetchTaskDetails(parsed);
+  const handleReject = () => {
+    if (!sessionToken || !currentOrder?.order_id) return;
+    Alert.alert(
+      'Reject Order',
+      'Are you sure you want to reject this order? You will not be able to accept it again.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Confirm',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setActionLoading(true);
+              await rejectDriverOrder(sessionToken, currentOrder.order_id);
+              setCurrentOrder(null);
+              setTaskMessage('Order rejected. Waiting for new assignment.');
+            } catch (error) {
+              Alert.alert('Error', error.message || 'Failed to reject order');
+            } finally {
+              setActionLoading(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const runDriverAction = async (actionFn) => {
-    if (!sessionToken || !currentOrderId) {
-      Alert.alert('Error', 'Missing session token or order ID');
-      return;
-    }
-
+    if (!sessionToken || !currentOrder?.order_id) return;
     try {
       setActionLoading(true);
-      await actionFn(sessionToken, currentOrderId);
-      await fetchTaskDetails(currentOrderId);
+      await actionFn(sessionToken, currentOrder.order_id);
+      await loadCurrentOrder();
     } catch (error) {
       Alert.alert('Error', error.message || 'Action failed');
     } finally {
@@ -107,47 +174,27 @@ export default function DriverDashboard({ sessionToken }) {
     }
   };
 
-  const handleReject = async () => {
-    if (!sessionToken || !currentOrderId) return;
-    try {
-      setActionLoading(true);
-      await rejectDriverOrder(sessionToken, currentOrderId);
-      setTaskDetails(null);
-      setCurrentOrderId(null);
-      setOrderIdInput('');
-      setTaskError('Order rejected successfully.');
-    } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to reject order');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
   const handleFinish = async () => {
-    if (!sessionToken || !currentOrderId) return;
+    if (!sessionToken || !currentOrder?.order_id) return;
     try {
       setActionLoading(true);
-      await finishDriverOrder(sessionToken, currentOrderId);
-      setTaskDetails(null);
-      setCurrentOrderId(null);
-      setOrderIdInput('');
-      setTaskError('Order finished successfully.');
+      await finishDriverOrder(sessionToken, currentOrder.order_id);
+      setCurrentOrder(null);
+      setTaskMessage('Delivery completed successfully.');
     } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to finish order');
+      Alert.alert('Error', error.message || 'Failed to finish delivery');
     } finally {
       setActionLoading(false);
     }
   };
 
   const handleCancel = async () => {
-    if (!sessionToken || !currentOrderId) return;
+    if (!sessionToken || !currentOrder?.order_id) return;
     try {
       setActionLoading(true);
-      await cancelDriverOrder(sessionToken, currentOrderId);
-      setTaskDetails(null);
-      setCurrentOrderId(null);
-      setOrderIdInput('');
-      setTaskError('Order cancelled successfully.');
+      await cancelDriverOrder(sessionToken, currentOrder.order_id);
+      setCurrentOrder(null);
+      setTaskMessage('Order cancelled.');
     } catch (error) {
       Alert.alert('Error', error.message || 'Failed to cancel order');
     } finally {
@@ -165,6 +212,22 @@ export default function DriverDashboard({ sessionToken }) {
     }
   };
 
+  // Compute remaining seconds for display
+  const getRemainingSupplierSecs = () => {
+    if (currentOrder?.remaining_supplier_seconds == null) return null;
+    return Math.max(0, currentOrder.remaining_supplier_seconds - supplierTimerTick);
+  };
+
+  const getRemainingDriverSecs = () => {
+    if (currentOrder?.remaining_driver_seconds == null) return null;
+    return Math.max(0, currentOrder.remaining_driver_seconds - driverTimerTick);
+  };
+
+  const supplierSecs = getRemainingSupplierSecs();
+  const driverSecs = getRemainingDriverSecs();
+  const supplierTimerExpired = supplierSecs != null && supplierSecs <= 0;
+  const driverTimerExpired = driverSecs != null && driverSecs <= 0;
+
   return (
     <View style={styles.container}>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
@@ -178,52 +241,78 @@ export default function DriverDashboard({ sessionToken }) {
             <Text style={styles.sectionTitle}>Current Task</Text>
             {!sessionToken ? <Text>Session missing. Login again.</Text> : null}
 
-            <View style={styles.inputRow}>
-              <TextInput
-                value={orderIdInput}
-                onChangeText={setOrderIdInput}
-                keyboardType="numeric"
-                placeholder="Enter assigned order ID"
-                style={[styles.input, styles.rowInput]}
-              />
-              <BasicButton title="Load" onPress={handleLoadOrder} style={styles.rowButton} />
-            </View>
+            <BasicButton title="Refresh" onPress={loadCurrentOrder} style={styles.fullButton} />
 
             {loadingTask ? <Text>Loading task...</Text> : null}
-            {taskError ? <Text>{taskError}</Text> : null}
+            {taskMessage ? <Text>{taskMessage}</Text> : null}
 
-            {taskDetails ? (
+            {!currentOrder && !loadingTask && !taskMessage ? (
+              <Text>No active task. You will be notified when assigned an order.</Text>
+            ) : null}
+
+            {currentOrder ? (
               <View style={styles.card}>
-                <Text>Order ID: {taskDetails.order_id}</Text>
-                <Text>Status: {taskDetails.status}</Text>
-                <Text>Location: {taskDetails.delivery_location}</Text>
-                <Text>Quantity: {taskDetails.quantity}</Text>
-                <Text>Price: {taskDetails.price}</Text>
-                <Text>Customer: {taskDetails.customer_name || '-'}</Text>
-                <Text>Customer Phone: {taskDetails.customer_phone || '-'}</Text>
+                <Text>Order ID: {currentOrder.order_id}</Text>
+                <Text>Status: {currentOrder.status}</Text>
+                <Text>Location: {currentOrder.delivery_location}</Text>
+                <Text>Quantity: {currentOrder.quantity}</Text>
+                <Text>Price: {currentOrder.price}</Text>
+                <Text>Customer: {currentOrder.customer_name || '-'}</Text>
+                <Text>Customer Phone: {currentOrder.customer_phone || '-'}</Text>
 
-                {taskDetails.status === 'supplier_timer' && (
-                  <View style={styles.actionRow}>
-                    <BasicButton title={actionLoading ? 'Accepting...' : 'Accept'} onPress={() => runDriverAction(acceptDriverOrder)} disabled={actionLoading} style={styles.actionButton} />
-                    <BasicButton title={actionLoading ? 'Rejecting...' : 'Reject'} onPress={handleReject} disabled={actionLoading} style={styles.actionButton} />
+                {/* Pending assignment phase: show both timers + accept/reject */}
+                {currentOrder.status === 'supplier_timer' && currentOrder.source === 'pending_assignment' && (
+                  <View>
+                    {supplierSecs != null && (
+                      <Text>
+                        Order timer: {supplierTimerExpired ? 'Expired' : formatSeconds(supplierSecs)}
+                      </Text>
+                    )}
+                    {driverSecs != null && (
+                      <Text>
+                        Your response timer: {driverTimerExpired ? 'Expired' : formatSeconds(driverSecs)}
+                      </Text>
+                    )}
+
+                    {supplierTimerExpired ? (
+                      <Text>This order has expired. Waiting for a new assignment.</Text>
+                    ) : driverTimerExpired ? (
+                      <Text>Your response time has expired. Waiting for new assignment.</Text>
+                    ) : (
+                      <View style={styles.actionRow}>
+                        <BasicButton
+                          title={actionLoading ? 'Accepting...' : 'Accept'}
+                          onPress={handleAccept}
+                          disabled={actionLoading}
+                          style={styles.actionButton}
+                        />
+                        <BasicButton
+                          title={actionLoading ? 'Rejecting...' : 'Reject'}
+                          onPress={handleReject}
+                          disabled={actionLoading}
+                          style={styles.actionButton}
+                        />
+                      </View>
+                    )}
                   </View>
                 )}
 
-                {taskDetails.status === 'accepted' && (
+                {/* Active delivery phase */}
+                {currentOrder.status === 'accepted' && (
                   <View style={styles.actionRow}>
                     <BasicButton title={actionLoading ? 'Starting...' : 'Start Ride'} onPress={() => runDriverAction(startDriverRide)} disabled={actionLoading} style={styles.actionButton} />
                     <BasicButton title={actionLoading ? 'Cancelling...' : 'Cancel'} onPress={handleCancel} disabled={actionLoading} style={styles.actionButton} />
                   </View>
                 )}
 
-                {taskDetails.status === 'ride_started' && (
+                {currentOrder.status === 'ride_started' && (
                   <View style={styles.actionRow}>
                     <BasicButton title={actionLoading ? 'Updating...' : 'Mark Reached'} onPress={() => runDriverAction(markDriverReached)} disabled={actionLoading} style={styles.actionButton} />
                     <BasicButton title={actionLoading ? 'Cancelling...' : 'Cancel'} onPress={handleCancel} disabled={actionLoading} style={styles.actionButton} />
                   </View>
                 )}
 
-                {taskDetails.status === 'reached' && (
+                {currentOrder.status === 'reached' && (
                   <View style={styles.actionRow}>
                     <BasicButton title={actionLoading ? 'Finishing...' : 'Finish Delivery'} onPress={handleFinish} disabled={actionLoading} style={styles.actionButton} />
                     <BasicButton title={actionLoading ? 'Cancelling...' : 'Cancel'} onPress={handleCancel} disabled={actionLoading} style={styles.actionButton} />
@@ -296,25 +385,6 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     marginBottom: 6,
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#000',
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  rowInput: {
-    flex: 1,
-    marginRight: 8,
-  },
-  rowButton: {
-    marginTop: 0,
-    minWidth: 90,
   },
   card: {
     borderWidth: 1,

@@ -1,5 +1,12 @@
 import { apiRequest } from './client';
 
+export function getCurrentDriverOrder(token) {
+    return apiRequest('/driver/orders/current', {
+        method: 'GET',
+        token,
+    });
+}
+
 export function getDriverOrderDetails(token, orderId) {
     return apiRequest(`/driver/orders/${orderId}/details`, {
         method: 'GET',

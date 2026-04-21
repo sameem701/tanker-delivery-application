@@ -31,6 +31,12 @@ export async function apiRequest(path, { method = 'GET', body, token } = {}) {
       signal: controller.signal,
     });
   } catch (error) {
+    console.log('FETCH ERROR:', JSON.stringify({
+      message: error?.message,
+      name: error?.name,
+      url: `${API_BASE_URL}${path}`,
+    }));
+
     if (error?.name === 'AbortError') {
       throw new Error('Request timed out. Check backend server status and network access.');
     }
