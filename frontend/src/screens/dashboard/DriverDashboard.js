@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Alert, ScrollView, StyleSheet } from 'react-native';
+import { View, Text, Alert, ScrollView, StyleSheet, Modal } from 'react-native';
 import BasicButton from '../../components/ui/BasicButton';
 import {
   getCurrentDriverOrder,
@@ -35,6 +35,9 @@ export default function DriverDashboard({ sessionToken }) {
   const [historyOrders, setHistoryOrders] = useState([]);
   const [historyDetails, setHistoryDetails] = useState(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Receipt shown after finishing a delivery
+  const [receiptOrder, setReceiptOrder] = useState(null);
 
   // Load (or refresh) the driver's current order via getCurrentDriverOrder
   const loadCurrentOrder = useCallback(async () => {
@@ -176,11 +179,13 @@ export default function DriverDashboard({ sessionToken }) {
 
   const handleFinish = async () => {
     if (!sessionToken || !currentOrder?.order_id) return;
+    const snapshot = { ...currentOrder };
     try {
       setActionLoading(true);
       await finishDriverOrder(sessionToken, currentOrder.order_id);
       setCurrentOrder(null);
-      setTaskMessage('Delivery completed successfully.');
+      setTaskMessage('');
+      setReceiptOrder(snapshot);
     } catch (error) {
       Alert.alert('Error', error.message || 'Failed to finish delivery');
     } finally {
@@ -230,6 +235,33 @@ export default function DriverDashboard({ sessionToken }) {
 
   return (
     <View style={styles.container}>
+      {/* Delivery receipt modal */}
+      <Modal
+        visible={receiptOrder !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setReceiptOrder(null)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ width: '85%', maxWidth: 380, backgroundColor: '#fff', borderRadius: 8, padding: 20 }}>
+            <Text style={{ fontSize: 17, marginBottom: 12 }}>Delivery Complete ✓</Text>
+            <View style={{ borderTopWidth: 1, borderColor: '#e0e0e0', marginBottom: 12 }} />
+            <Text style={{ marginBottom: 4 }}>Order ID: #{receiptOrder?.order_id}</Text>
+            <Text style={{ marginBottom: 4 }}>Location: {receiptOrder?.delivery_location || '-'}</Text>
+            <Text style={{ marginBottom: 4 }}>Quantity: {receiptOrder?.quantity || '-'} gal</Text>
+            <Text style={{ marginBottom: 4 }}>Price: {receiptOrder?.price || '-'}</Text>
+            <Text style={{ marginBottom: 4 }}>Customer: {receiptOrder?.customer_name || '-'}</Text>
+            <Text style={{ marginBottom: 4 }}>Customer Phone: {receiptOrder?.customer_phone || '-'}</Text>
+            <Text style={{ marginBottom: 16 }}>Supplier: {receiptOrder?.supplier_name || '-'}</Text>
+            <View style={{ borderTopWidth: 1, borderColor: '#e0e0e0', marginBottom: 12 }} />
+            <BasicButton
+              title="OK"
+              onPress={() => setReceiptOrder(null)}
+              style={{ marginTop: 0 }}
+            />
+          </View>
+        </View>
+      </Modal>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         <View style={styles.topTabsRow}>
           <BasicButton title="Task" onPress={() => setActiveTab('task')} style={styles.tabButton} />

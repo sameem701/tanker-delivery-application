@@ -441,7 +441,8 @@ BEGIN
         json_build_object(
             'order_id', o.order_id,
             'requested_capacity', o.requested_capacity,
-            'customer_bid_price', o.customer_bid_price
+            'customer_bid_price', o.customer_bid_price,
+            'delivery_location', o.delivery_location
                 )
                 ORDER BY o.created_at DESC
     ) INTO v_orders

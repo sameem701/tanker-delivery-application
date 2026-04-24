@@ -80,3 +80,10 @@ export function cancelSupplierOrder(token, orderId) {
         token,
     });
 }
+
+export function getAvailableOrderDetail(token, orderId) {
+    return apiRequest(`/supplier/orders/available/${orderId}`, {
+        method: 'GET',
+        token,
+    });
+}

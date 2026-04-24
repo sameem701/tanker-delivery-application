@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { View, Text, Alert } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, Alert, BackHandler } from 'react-native';
 import CustomerDashboard from './dashboard/CustomerDashboard';
 import SupplierDashboard from './dashboard/SupplierDashboard';
 import DriverDashboard from './dashboard/DriverDashboard';
@@ -9,6 +9,22 @@ import { logoutCustomer, logoutSupplier, logoutDriver } from '../api/authApi';
 export default function DashboardScreen({ route, navigation }) {
     const { phone, role, sessionToken } = route.params || { phone: 'Unknown', role: 'undefined', sessionToken: '' };
     const [loggingOut, setLoggingOut] = useState(false);
+    const backPressedOnceRef = useRef(false);
+
+    useEffect(() => {
+        const onBackPress = () => {
+            if (backPressedOnceRef.current) {
+                BackHandler.exitApp();
+                return true;
+            }
+            backPressedOnceRef.current = true;
+            Alert.alert('Exit', 'Press back again to exit the app.');
+            setTimeout(() => { backPressedOnceRef.current = false; }, 2000);
+            return true;
+        };
+        const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+        return () => sub.remove();
+    }, []);
 
     const logoutByRole = {
         customer: logoutCustomer,

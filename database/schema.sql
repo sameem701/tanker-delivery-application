@@ -809,7 +809,8 @@ BEGIN
                 'price', price,
                 'quantity', quantity,
                 'status', status,
-                'order_date', order_date
+                'order_date', order_date,
+                'customer_rating', customer_rating
             ) ORDER BY order_date DESC
         ) INTO v_orders
         FROM order_history

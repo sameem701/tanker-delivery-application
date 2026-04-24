@@ -74,7 +74,7 @@ const getCurrentOrderCustomer = async (req, res) => {
          WHERE o.customer_id = $1
            AND (
              o.status = 'open'
-             OR o.status IN ('accepted', 'ride_started', 'reached')
+             OR o.status IN ('accepted', 'ride_started', 'reached', 'finished')
              OR (
                o.status = 'supplier_timer'
                AND (o.time_limit_for_supplier IS NULL OR o.time_limit_for_supplier >= CURRENT_TIMESTAMP)
@@ -94,7 +94,8 @@ const getCurrentOrderCustomer = async (req, res) => {
              WHEN 'accepted' THEN 3
              WHEN 'supplier_timer' THEN 4
              WHEN 'open' THEN 5
-             ELSE 6
+             WHEN 'finished' THEN 6
+             ELSE 7
            END,
            created_at DESC,
            order_id DESC
@@ -139,6 +140,25 @@ const getCurrentOrderCustomer = async (req, res) => {
     if (summary.status === 'open') {
       const dbResult = await query('SELECT orderOpen($1, $2) AS result', [customerId, summary.order_id]);
       response = dbResult.rows[0].result;
+    } else if (summary.status === 'finished') {
+      // Return a minimal payload — enough for the frontend to show the rating prompt
+      const orderRow = await query(
+        `SELECT order_id, status, requested_capacity, accepted_price, delivery_location FROM orders WHERE order_id = $1`,
+        [summary.order_id]
+      );
+      const o = orderRow.rows[0];
+      return res.status(200).json({
+        success: true,
+        data: {
+          code: 1,
+          order_id: o.order_id,
+          status: 'finished',
+          quantity: o.requested_capacity,
+          price: o.accepted_price,
+          delivery_location: o.delivery_location,
+          awaiting_rating: true
+        }
+      });
     } else {
       const dbResult = await query('SELECT get_order_details_customer($1, $2) AS result', [
         customerId,
@@ -2627,9 +2647,18 @@ const viewPastOrderDetailsCustomer = async (req, res) => {
       });
     }
 
+    // Also fetch customer_rating which the DB function doesn't include
+    const ratingResult = await query(
+      'SELECT customer_rating FROM order_history WHERE order_id = $1',
+      [orderId]
+    );
+    const customerRating = ratingResult.rows.length > 0
+      ? (ratingResult.rows[0].customer_rating ?? null)
+      : null;
+
     return res.status(200).json({
       success: true,
-      data: response.order
+      data: { ...response.order, order_id: orderId, customer_rating: customerRating }
     });
   } catch (error) {
     console.error('View past order details (customer) error:', error);

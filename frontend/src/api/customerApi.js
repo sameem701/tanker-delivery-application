@@ -58,3 +58,24 @@ export function rejectCustomerBid(token, orderId, bidId) {
         token,
     });
 }
+export function listCustomerHistory(token) {
+    return apiRequest('/customer/history', {
+        method: 'GET',
+        token,
+    });
+}
+
+export function getCustomerHistoryDetails(token, orderId) {
+    return apiRequest(`/customer/history/${orderId}`, {
+        method: 'GET',
+        token,
+    });
+}
+
+export function submitCustomerRating(token, orderId, rating) {
+    return apiRequest(`/customer/orders/${orderId}/rating`, {
+        method: 'POST',
+        token,
+        body: { rating },
+    });
+}

@@ -13,6 +13,7 @@ import {
     getAssignableDriversForOrder,
     assignDriverToOrder,
     cancelSupplierOrder,
+    getAvailableOrderDetail,
 } from '../../api/supplierApi';
 
 export default function SupplierDashboard({ sessionToken }) {
@@ -37,10 +38,12 @@ export default function SupplierDashboard({ sessionToken }) {
     const [loadingAssignableDrivers, setLoadingAssignableDrivers] = useState(false);
     const [timerTick, setTimerTick] = useState(0); // increments every second for timer display
 
+    // Market order detail state (for viewing full order info before bidding)
+    const [marketOrderDetail, setMarketOrderDetail] = useState(null);
+    const [loadingMarketDetail, setLoadingMarketDetail] = useState(false);
+
     // Track which supplier_timer orders we've already auto-navigated to, so we only do it once per order
     const autoNavigatedRef = useRef(new Set());
-
-    const previewActiveOrders = activeOrders.slice(0, 3);
 
     // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -163,6 +166,23 @@ export default function SupplierDashboard({ sessionToken }) {
         }
     }, [sessionToken]);
 
+    const fetchMarketOrderDetail = async (orderId) => {
+        if (!sessionToken || !orderId) return;
+        try {
+            setLoadingMarketDetail(true);
+            const response = await getAvailableOrderDetail(sessionToken, orderId);
+            setMarketOrderDetail(response?.data || null);
+        } catch (error) {
+            // 403 means no available drivers — surface this clearly
+            Alert.alert(
+                'Cannot View Order',
+                error.message || 'Failed to load order details'
+            );
+        } finally {
+            setLoadingMarketDetail(false);
+        }
+    };
+
     // ─── Handlers ──────────────────────────────────────────────────────────────
 
     const handleSelectOrder = (orderId) => {
@@ -229,6 +249,7 @@ export default function SupplierDashboard({ sessionToken }) {
             await placeSupplierBid(sessionToken, Number(orderId), bidPrice);
             Alert.alert('Success', 'Bid placed successfully');
             setBids((prev) => ({ ...prev, [orderId]: '' }));
+            setMarketOrderDetail(null);
             fetchLiveMarket();
         } catch (error) {
             Alert.alert('Error', error.message || 'Failed to place bid');
@@ -365,6 +386,68 @@ export default function SupplierDashboard({ sessionToken }) {
 
     const orderKey = (item) => String(item.order_id || item.id);
 
+    // Extracts the area portion from a delivery_location stored as "address, area"
+    const extractArea = (deliveryLocation) => {
+        if (!deliveryLocation) return '-';
+        const parts = deliveryLocation.split(', ');
+        return parts.length > 1 ? parts[parts.length - 1] : deliveryLocation;
+    };
+
+    // ─── Market Order Detail View ───────────────────────────────────────────────
+
+    const renderMarketDetail = () => {
+        if (loadingMarketDetail && !marketOrderDetail) {
+            return (
+                <View style={styles.section}>
+                    <BasicButton title="← Back to Market" onPress={() => setMarketOrderDetail(null)} style={styles.backButton} />
+                    <Text>Loading order details...</Text>
+                </View>
+            );
+        }
+
+        if (!marketOrderDetail) {
+            return (
+                <View style={styles.section}>
+                    <BasicButton title="← Back to Market" onPress={() => setMarketOrderDetail(null)} style={styles.backButton} />
+                    <Text>Order details unavailable.</Text>
+                </View>
+            );
+        }
+
+        const orderId = marketOrderDetail.order_id;
+        return (
+            <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+                <BasicButton
+                    title="← Back to Market"
+                    onPress={() => setMarketOrderDetail(null)}
+                    style={styles.backButton}
+                />
+                <View style={styles.card}>
+                    <Text style={styles.sectionTitle}>Order #{orderId}</Text>
+                    <Text>Location: {marketOrderDetail.delivery_location || '-'}</Text>
+                    <Text>Gallons: {marketOrderDetail.requested_capacity || '-'}</Text>
+                    <Text>Customer Offer: {marketOrderDetail.customer_bid_price || '-'}</Text>
+                    <Text>Customer: {marketOrderDetail.customer_name || '-'}</Text>
+                </View>
+                <View style={styles.card}>
+                    <Text style={styles.sectionTitle}>Place Your Bid</Text>
+                    <TextInput
+                        placeholder="Your bid price"
+                        keyboardType="numeric"
+                        value={bids[orderId] || ''}
+                        style={styles.input}
+                        onChangeText={(val) => setBids((prev) => ({ ...prev, [orderId]: val }))}
+                    />
+                    <BasicButton
+                        title="Send Bid"
+                        onPress={() => handleSendBid(orderId)}
+                        style={styles.fullButton}
+                    />
+                </View>
+            </ScrollView>
+        );
+    };
+
     // ─── Order Detail View ─────────────────────────────────────────────────────
 
     const renderOrderDetail = () => {
@@ -472,10 +555,11 @@ export default function SupplierDashboard({ sessionToken }) {
 
     // If we're on the active orders tab with an order selected, show detail
     const showingOrderDetail = activeTab === 'orders' && ordersTab === 'active' && selectedOrderId !== null;
+    const showingMarketDetail = activeTab === 'market' && marketOrderDetail !== null;
 
     return (
         <View style={styles.container}>
-            {!showingOrderDetail && (
+            {!showingOrderDetail && !showingMarketDetail && (
                 <View style={styles.topTabsRow}>
                     <BasicButton title="Live Market" onPress={() => setActiveTab('market')} style={styles.tabButton} />
                     <BasicButton title="Orders" onPress={() => setActiveTab('orders')} style={styles.tabButton} />
@@ -485,52 +569,92 @@ export default function SupplierDashboard({ sessionToken }) {
 
             {showingOrderDetail ? (
                 renderOrderDetail()
-            ) : (
-                <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-                    {activeTab === 'market' && (
-                        <View style={styles.section}>
-                            <Text style={styles.sectionTitle}>Live Orders</Text>
-                            {loadingMarket ? <Text>Loading live market...</Text> : null}
-                            {!sessionToken ? <Text>Session missing. Login again.</Text> : null}
-                            {marketOrders.length === 0 ? <Text>No live orders</Text> : null}
-                            {marketOrders.map((item) => (
+            ) : showingMarketDetail ? (
+                renderMarketDetail()
+            ) : activeTab === 'market' ? (
+                <View style={styles.marketTabContainer}>
+                    {/* Live orders — vertical scroll */}
+                    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 8 }}>
+                        <Text style={styles.sectionTitle}>Live Orders</Text>
+                        {loadingMarket ? <Text>Loading live market...</Text> : null}
+                        {!sessionToken ? <Text>Session missing. Login again.</Text> : null}
+                        {marketOrders.length === 0 && !loadingMarket ? <Text>No live orders</Text> : null}
+                        {marketOrders.map((item) => {
+                            const orderId = item.order_id || item.id;
+                            const area = extractArea(item.delivery_location);
+                            return (
                                 <View key={orderKey(item)} style={styles.card}>
-                                    <Text>Order #{item.order_id || item.id}</Text>
-                                    <Text>Address: {item.delivery_location || item.address || '-'}</Text>
-                                    <Text>Gallons: {item.requested_capacity || item.gallons} | Customer Offer: {item.customer_bid_price || item.price}</Text>
-                                    <View style={styles.inputButtonRow}>
+                                    <Text>Order #{orderId}</Text>
+                                    <Text>Area: {area}</Text>
+                                    <Text>Gallons: {item.requested_capacity} | Customer Offer: {item.customer_bid_price}</Text>
+                                    <View style={styles.bidRow}>
                                         <TextInput
-                                            placeholder="Your Bid Price"
+                                            placeholder="Bid price"
                                             keyboardType="numeric"
-                                            value={bids[item.order_id || item.id] || ''}
-                                            style={[styles.input, styles.rowInput]}
-                                            onChangeText={(val) => setBids(prev => ({ ...prev, [item.order_id || item.id]: val }))}
+                                            value={bids[orderId] || ''}
+                                            style={styles.bidInput}
+                                            onChangeText={(val) => setBids((prev) => ({ ...prev, [orderId]: val }))}
                                         />
-                                        <BasicButton title="Send Bid" onPress={() => handleSendBid(item.order_id || item.id)} style={styles.rowButton} />
+                                        <BasicButton
+                                            title="Bid"
+                                            onPress={() => handleSendBid(orderId)}
+                                            style={styles.bidButton}
+                                            textStyle={styles.bidButtonText}
+                                        />
+                                        <BasicButton
+                                            title="View"
+                                            onPress={() => fetchMarketOrderDetail(orderId)}
+                                            style={styles.viewButton}
+                                            textStyle={styles.bidButtonText}
+                                        />
                                     </View>
                                 </View>
-                            ))}
+                            );
+                        })}
+                    </ScrollView>
 
-                            <Text style={styles.sectionTitle}>Your Active Orders (Preview: up to 3)</Text>
-                            {previewActiveOrders.length === 0 ? <Text>No active orders</Text> : null}
-                            {previewActiveOrders.map((item) => (
-                                <View key={orderKey(item)} style={styles.card}>
-                                    <Text>Order #{item.order_id || item.id}</Text>
-                                    <Text>Status: {item.status}</Text>
-                                </View>
-                            ))}
-
-                            <BasicButton
-                                title="View All Orders"
-                                style={styles.fullButton}
-                                onPress={() => {
-                                    setActiveTab('orders');
-                                    setOrdersTab('active');
-                                }}
-                            />
-                        </View>
-                    )}
-
+                    {/* Active orders — pinned bottom, horizontal scroll */}
+                    <View style={styles.activeOrdersBar}>
+                        <BasicButton
+                            title="View All Orders"
+                            style={[styles.fullButton, { marginBottom: 6 }]}
+                            onPress={() => {
+                                setActiveTab('orders');
+                                setOrdersTab('active');
+                            }}
+                        />
+                        <Text style={styles.sectionTitle}>Active Orders ({activeOrders.length})</Text>
+                        {activeOrders.length === 0 ? (
+                            <Text style={styles.emptyText}>No active orders</Text>
+                        ) : (
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                                {activeOrders.map((item) => {
+                                    const orderId = item.order_id || item.id;
+                                    return (
+                                        <View key={orderKey(item)} style={styles.activeOrderCard}>
+                                            <Text>Order #{orderId}</Text>
+                                            <Text>Status: {item.status}</Text>
+                                            {item.status === 'supplier_timer' ? (
+                                                <Text style={styles.timerBadge}>⏱ Assign driver!</Text>
+                                            ) : null}
+                                            <BasicButton
+                                                title="Details"
+                                                onPress={() => {
+                                                    setActiveTab('orders');
+                                                    setOrdersTab('active');
+                                                    handleSelectOrder(orderId);
+                                                }}
+                                                style={{ marginTop: 4 }}
+                                            />
+                                        </View>
+                                    );
+                                })}
+                            </ScrollView>
+                        )}
+                    </View>
+                </View>
+            ) : (
+                <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
                     {activeTab === 'orders' && (
                         <View style={styles.section}>
                             <View style={styles.subTabsRow}>
@@ -610,6 +734,59 @@ export default function SupplierDashboard({ sessionToken }) {
 }
 
 const styles = StyleSheet.create({
+    marketTabContainer: {
+        flex: 1,
+        width: '90%',
+        maxWidth: 420,
+        alignSelf: 'center',
+    },
+    activeOrdersBar: {
+        borderTopWidth: 1,
+        borderTopColor: '#d0d0d0',
+        paddingTop: 8,
+        paddingBottom: 8,
+    },
+    activeOrderCard: {
+        width: 155,
+        borderWidth: 1,
+        borderColor: '#d0d0d0',
+        borderRadius: 4,
+        padding: 8,
+        marginRight: 8,
+    },
+    bidRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginTop: 8,
+    },
+    bidInput: {
+        flex: 1,
+        height: 44,
+        borderWidth: 1,
+        borderColor: '#000',
+        borderRadius: 4,
+        paddingHorizontal: 8,
+        marginRight: 6,
+        fontSize: 14,
+    },
+    bidButton: {
+        width: 72,
+        height: 44,
+        marginTop: 0,
+        paddingVertical: 0,
+        paddingHorizontal: 4,
+        marginRight: 6,
+    },
+    viewButton: {
+        width: 72,
+        height: 44,
+        marginTop: 0,
+        paddingVertical: 0,
+        paddingHorizontal: 4,
+    },
+    bidButtonText: {
+        fontSize: 13,
+    },
     container: {
         flex: 1,
         alignItems: 'center',
