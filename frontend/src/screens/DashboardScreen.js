@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Alert, BackHandler } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import CustomerDashboard from './dashboard/CustomerDashboard';
 import SupplierDashboard from './dashboard/SupplierDashboard';
 import DriverDashboard from './dashboard/DriverDashboard';
@@ -48,6 +49,7 @@ export default function DashboardScreen({ route, navigation }) {
         try {
             setLoggingOut(true);
             await logoutFn(sessionToken);
+            await AsyncStorage.multiRemove(['session_token', 'session_phone']);
             navigation.reset({ index: 0, routes: [{ name: 'EnterPhone' }] });
         } catch (error) {
             Alert.alert('Logout Failed', error.message || 'Failed to logout');

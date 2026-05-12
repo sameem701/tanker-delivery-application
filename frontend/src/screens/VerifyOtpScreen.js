@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Text, View, TextInput } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { storeOtp, verifyOtp } from '../api/authApi';
 import BasicButton from '../components/ui/BasicButton';
 
@@ -53,6 +54,9 @@ export default function VerifyOtpScreen({ route, navigation }) {
             const nextScreen = data.next_screen || 'enter_number';
             const role = data.role || 'undefined';
             const sessionToken = data.session_token || '';
+
+            await AsyncStorage.setItem('session_token', sessionToken);
+            await AsyncStorage.setItem('session_phone', phone);
 
             if (nextScreen === 'enter_details') {
                 navigation.navigate('EnterDetails', { phone, sessionToken });

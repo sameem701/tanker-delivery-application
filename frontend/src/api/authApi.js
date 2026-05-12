@@ -1,7 +1,7 @@
 import { apiRequest } from './client';
 
 export function startup(token) {
-  return apiRequest('/app/startup', { method: 'GET', token });
+  return apiRequest('/app/startup', { method: 'POST', token });
 }
 
 export function enterNumber(phone) {
