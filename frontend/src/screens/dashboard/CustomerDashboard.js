@@ -495,12 +495,16 @@ export default function CustomerDashboard({ sessionToken }) {
     }
   };
 
-  const handleDismissPrompt = () => {
-    if (ratingPromptOrder) {
+  const handleDismissPrompt = async () => {
+    if (ratingPromptOrder && sessionToken) {
       dismissedRatingIds.current.add(ratingPromptOrder.order_id);
+      try {
+        await submitCustomerRating(sessionToken, ratingPromptOrder.order_id, null);
+      } catch (_e) { /* silent — best effort skip */ }
     }
     setRatingPromptOrder(null);
     setPromptRating(null);
+    setActiveOrder(null);
   };
 
   const handleSubmitPromptRating = async () => {
@@ -511,6 +515,7 @@ export default function CustomerDashboard({ sessionToken }) {
       dismissedRatingIds.current.add(ratingPromptOrder.order_id);
       setRatingPromptOrder(null);
       setPromptRating(null);
+      setActiveOrder(null);
       Alert.alert('Thank you!', 'Your rating has been submitted.');
     } catch (error) {
       Alert.alert('Error', error.message || 'Failed to submit rating');
@@ -550,24 +555,6 @@ export default function CustomerDashboard({ sessionToken }) {
     });
     setPromptRating(null);
   }, [activeOrder?.status, activeOrder?.id]);
-
-  // On mount: check history for any completed unrated order and prompt
-  useEffect(() => {
-    if (!sessionToken) return;
-    (async () => {
-      try {
-        const histRes = await listCustomerHistory(sessionToken);
-        const orders = Array.isArray(histRes?.data?.orders) ? histRes.data.orders : [];
-        const unrated = orders.find(
-          (o) => (o.status === 'completed' || o.status === 'finished') && o.customer_rating == null
-        );
-        if (unrated && !dismissedRatingIds.current.has(unrated.order_id)) {
-          setRatingPromptOrder(unrated);
-          setPromptRating(null);
-        }
-      } catch (_e) { /* silent — non-critical */ }
-    })();
-  }, [sessionToken]);
 
   const visibleBids = bids.filter((item) => getRemainingSeconds(item) > 0);
 

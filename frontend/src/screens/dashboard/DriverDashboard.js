@@ -67,17 +67,19 @@ export default function DriverDashboard({ sessionToken }) {
     }
   }, [sessionToken]);
 
-  // Polling: when in supplier_timer phase (pending assignment), poll every 3s
+  // Polling: idle (no order) every 8s, pending assignment every 3s, active delivery every 5s
   useEffect(() => {
     if (!sessionToken || activeTab !== 'task') return;
     loadCurrentOrder();
 
     const isPendingPhase = currentOrder?.status === 'supplier_timer' && currentOrder?.source === 'pending_assignment';
     const isActivePhase = ['accepted', 'ride_started', 'reached'].includes(currentOrder?.status);
+    const isIdle = !currentOrder;
 
-    if (!isPendingPhase && !isActivePhase) return;
-
-    const interval = setInterval(loadCurrentOrder, isPendingPhase ? 3000 : 5000);
+    const interval = setInterval(
+      loadCurrentOrder,
+      isPendingPhase ? 3000 : isActivePhase ? 5000 : 5000
+    );
     return () => clearInterval(interval);
   }, [sessionToken, activeTab, currentOrder?.status, currentOrder?.source]);
 
@@ -270,80 +272,71 @@ export default function DriverDashboard({ sessionToken }) {
 
         {activeTab === 'task' && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Current Task</Text>
+            <View style={styles.rowBetween}>
+              <Text style={[styles.sectionTitle, { flex: 1 }]}>Current Task</Text>
+              <BasicButton title="Refresh" onPress={loadCurrentOrder} style={styles.inlineButton} />
+            </View>
+
             {!sessionToken ? <Text>Session missing. Login again.</Text> : null}
-
-            <BasicButton title="Refresh" onPress={loadCurrentOrder} style={styles.fullButton} />
-
-            {loadingTask ? <Text>Loading task...</Text> : null}
-            {taskMessage ? <Text>{taskMessage}</Text> : null}
+            {loadingTask ? <Text style={{ marginTop: 20 }}>Loading task...</Text> : null}
+            {taskMessage ? <Text style={{ marginTop: 20 }}>{taskMessage}</Text> : null}
 
             {!currentOrder && !loadingTask && !taskMessage ? (
-              <Text>No active task. You will be notified when assigned an order.</Text>
+              <Text style={{ marginTop: 20 }}>No active task. Checking for new assignments automatically.</Text>
             ) : null}
 
             {currentOrder ? (
-              <View style={styles.card}>
-                <Text>Order ID: {currentOrder.order_id}</Text>
-                <Text>Status: {currentOrder.status}</Text>
-                <Text>Location: {currentOrder.delivery_location}</Text>
-                <Text>Quantity: {currentOrder.quantity}</Text>
-                <Text>Price: {currentOrder.price}</Text>
-                <Text>Customer: {currentOrder.customer_name || '-'}</Text>
-                <Text>Customer Phone: {currentOrder.customer_phone || '-'}</Text>
+              <View>
+                {/* Order info */}
+                <View style={styles.card}>
+                  <Text>Order #{currentOrder.order_id}</Text>
+                  <Text>Status: {currentOrder.status}</Text>
+                  <Text>Location: {currentOrder.delivery_location}</Text>
+                  <Text>Quantity: {currentOrder.quantity}</Text>
+                  <Text>Price: {currentOrder.price}</Text>
+                </View>
 
-                {/* Pending assignment phase: show both timers + accept/reject */}
+                {/* Customer info */}
+                <View style={styles.card}>
+                  <Text>Customer: {currentOrder.customer_name || '-'}</Text>
+                  <Text>Phone: {currentOrder.customer_phone || '-'}</Text>
+                </View>
+
+                {/* Pending assignment phase: timers + accept/reject */}
                 {currentOrder.status === 'supplier_timer' && currentOrder.source === 'pending_assignment' && (
-                  <View>
+                  <View style={styles.card}>
                     {supplierSecs != null && (
-                      <Text>
-                        Order timer: {supplierTimerExpired ? 'Expired' : formatSeconds(supplierSecs)}
-                      </Text>
+                      <Text>Order timer: {supplierTimerExpired ? 'Expired' : formatSeconds(supplierSecs)}</Text>
                     )}
                     {driverSecs != null && (
-                      <Text>
-                        Your response timer: {driverTimerExpired ? 'Expired' : formatSeconds(driverSecs)}
-                      </Text>
+                      <Text>Your response timer: {driverTimerExpired ? 'Expired' : formatSeconds(driverSecs)}</Text>
                     )}
-
                     {supplierTimerExpired ? (
                       <Text>This order has expired. Waiting for a new assignment.</Text>
                     ) : driverTimerExpired ? (
                       <Text>Your response time has expired. Waiting for new assignment.</Text>
                     ) : (
                       <View style={styles.actionRow}>
-                        <BasicButton
-                          title={actionLoading ? 'Accepting...' : 'Accept'}
-                          onPress={handleAccept}
-                          disabled={actionLoading}
-                          style={styles.actionButton}
-                        />
-                        <BasicButton
-                          title={actionLoading ? 'Rejecting...' : 'Reject'}
-                          onPress={handleReject}
-                          disabled={actionLoading}
-                          style={styles.actionButton}
-                        />
+                        <BasicButton title={actionLoading ? 'Accepting...' : 'Accept'} onPress={handleAccept} disabled={actionLoading} style={styles.actionButton} />
+                        <BasicButton title={actionLoading ? 'Rejecting...' : 'Reject'} onPress={handleReject} disabled={actionLoading} style={styles.actionButton} />
                       </View>
                     )}
                   </View>
                 )}
 
-                {/* Active delivery phase */}
+                {/* Active delivery actions */}
                 {currentOrder.status === 'accepted' && (
                   <View style={styles.actionRow}>
                     <BasicButton title={actionLoading ? 'Starting...' : 'Start Ride'} onPress={() => runDriverAction(startDriverRide)} disabled={actionLoading} style={styles.actionButton} />
                     <BasicButton title={actionLoading ? 'Cancelling...' : 'Cancel'} onPress={handleCancel} disabled={actionLoading} style={styles.actionButton} />
                   </View>
                 )}
-
                 {currentOrder.status === 'ride_started' && (
                   <View style={styles.actionRow}>
                     <BasicButton title={actionLoading ? 'Updating...' : 'Mark Reached'} onPress={() => runDriverAction(markDriverReached)} disabled={actionLoading} style={styles.actionButton} />
                     <BasicButton title={actionLoading ? 'Cancelling...' : 'Cancel'} onPress={handleCancel} disabled={actionLoading} style={styles.actionButton} />
                   </View>
                 )}
-
                 {currentOrder.status === 'reached' && (
                   <View style={styles.actionRow}>
                     <BasicButton title={actionLoading ? 'Finishing...' : 'Finish Delivery'} onPress={handleFinish} disabled={actionLoading} style={styles.actionButton} />
@@ -357,32 +350,40 @@ export default function DriverDashboard({ sessionToken }) {
 
         {activeTab === 'history' && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Past Orders</Text>
-            <BasicButton title="Refresh History" onPress={fetchHistory} style={styles.fullButton} />
-            {loadingHistory ? <Text>Loading history...</Text> : null}
-            {historyOrders.length === 0 ? <Text>No past orders.</Text> : null}
-
-            {historyOrders.map((item) => (
-              <View key={String(item.order_id || item.id)} style={styles.card}>
-                <Text>Order ID: {item.order_id || item.id}</Text>
-                <Text>Status: {item.status || '-'}</Text>
-                <Text>Date: {item.order_date || item.created_at || '-'}</Text>
-                <BasicButton title="View Details" onPress={() => handleViewHistoryOrder(item.order_id || item.id)} style={styles.fullButton} />
-              </View>
-            ))}
-
             {historyDetails ? (
-              <View style={styles.card}>
-                <Text>History Order Details</Text>
-                <Text>Order ID: {historyDetails.order_id || '-'}</Text>
-                <Text>Status: {historyDetails.status || '-'}</Text>
-                <Text>Customer: {historyDetails.customer_name || '-'}</Text>
-                <Text>Supplier: {historyDetails.supplier_name || '-'}</Text>
-                <Text>Driver: {historyDetails.driver_name || '-'}</Text>
-                <Text>Quantity: {historyDetails.quantity || '-'}</Text>
-                <Text>Price: {historyDetails.price || '-'}</Text>
+              <View>
+                <BasicButton
+                  title="← Back to History"
+                  onPress={() => setHistoryDetails(null)}
+                  style={styles.backButton}
+                />
+                <View style={styles.card}>
+                  <Text>Order #{historyDetails.order_id || '-'}</Text>
+                  <Text>Status: {historyDetails.status || '-'}</Text>
+                  <Text>Date: {historyDetails.order_date || '-'}</Text>
+                  <Text>Customer: {historyDetails.customer_name || '-'}</Text>
+                  <Text>Supplier: {historyDetails.supplier_name || '-'}</Text>
+                  <Text>Driver: {historyDetails.driver_name || '-'}</Text>
+                  <Text>Quantity: {historyDetails.quantity || '-'}</Text>
+                  <Text>Price: {historyDetails.price || '-'}</Text>
+                </View>
               </View>
-            ) : null}
+            ) : (
+              <View>
+                <Text style={styles.sectionTitle}>Past Orders</Text>
+                <BasicButton title="Refresh History" onPress={fetchHistory} style={styles.fullButton} />
+                {loadingHistory ? <Text>Loading history...</Text> : null}
+                {historyOrders.length === 0 ? <Text>No past orders.</Text> : null}
+                {historyOrders.map((item) => (
+                  <View key={String(item.order_id || item.id)} style={styles.card}>
+                    <Text>Order ID: {item.order_id || item.id}</Text>
+                    <Text>Status: {item.status || '-'}</Text>
+                    <Text>Date: {item.order_date || item.created_at || '-'}</Text>
+                    <BasicButton title="View Details" onPress={() => handleViewHistoryOrder(item.order_id || item.id)} style={styles.fullButton} />
+                  </View>
+                ))}
+              </View>
+            )}
           </View>
         )}
       </ScrollView>
@@ -397,10 +398,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   scroll: {
-    width: '90%',
-    maxWidth: 420,
+    alignSelf: 'stretch',
   },
   scrollContent: {
+    paddingHorizontal: 16,
     paddingBottom: 16,
   },
   topTabsRow: {
@@ -422,18 +423,35 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#d0d0d0',
     borderRadius: 4,
-    padding: 10,
-    marginTop: 8,
+    padding: 8,
+    marginTop: 4,
   },
   actionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 8,
+    marginTop: 6,
   },
   actionButton: {
     width: '49%',
+    marginTop: 0,
   },
   fullButton: {
     alignSelf: 'stretch',
+    marginTop: 6,
+  },
+  rowBetween: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    alignSelf: 'stretch',
+  },
+  inlineButton: {
+    marginTop: 0,
+    minWidth: 90,
+  },
+  backButton: {
+    alignSelf: 'flex-start',
+    marginTop: 0,
+    marginBottom: 4,
   },
 });

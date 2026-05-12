@@ -87,3 +87,10 @@ export function getAvailableOrderDetail(token, orderId) {
         token,
     });
 }
+
+export function getPastSupplierOrderDetail(token, orderId) {
+    return apiRequest(`/supplier/history/${orderId}`, {
+        method: 'GET',
+        token,
+    });
+}

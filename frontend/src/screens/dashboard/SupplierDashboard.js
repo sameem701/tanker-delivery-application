@@ -14,6 +14,7 @@ import {
     assignDriverToOrder,
     cancelSupplierOrder,
     getAvailableOrderDetail,
+    getPastSupplierOrderDetail,
 } from '../../api/supplierApi';
 
 export default function SupplierDashboard({ sessionToken }) {
@@ -41,6 +42,9 @@ export default function SupplierDashboard({ sessionToken }) {
     // Market order detail state (for viewing full order info before bidding)
     const [marketOrderDetail, setMarketOrderDetail] = useState(null);
     const [loadingMarketDetail, setLoadingMarketDetail] = useState(false);
+
+    // Past order detail state
+    const [pastOrderDetail, setPastOrderDetail] = useState(null);
 
     // Track which supplier_timer orders we've already auto-navigated to, so we only do it once per order
     const autoNavigatedRef = useRef(new Set());
@@ -96,6 +100,16 @@ export default function SupplierDashboard({ sessionToken }) {
             setLoadingOrders(false);
         }
     }, [sessionToken]);
+
+    const fetchPastOrderDetail = async (orderId) => {
+        if (!sessionToken) return;
+        try {
+            const response = await getPastSupplierOrderDetail(sessionToken, orderId);
+            setPastOrderDetail(response?.data || null);
+        } catch (error) {
+            Alert.alert('Error', error.message || 'Failed to fetch order details');
+        }
+    };
 
     const fetchPastOrders = async () => {
         if (!sessionToken) return;
@@ -689,13 +703,40 @@ export default function SupplierDashboard({ sessionToken }) {
 
                             {ordersTab === 'past' && (
                                 <View>
-                                    {pastOrders.length === 0 ? <Text>No past orders</Text> : null}
-                                    {pastOrders.map((item) => (
-                                        <View key={orderKey(item)} style={styles.card}>
-                                            <Text>Order #{item.order_id || item.id}</Text>
-                                            <Text>Status: {item.status || 'Completed'}</Text>
+                                    {pastOrderDetail ? (
+                                        <View>
+                                            <BasicButton
+                                                title="← Back to Past Orders"
+                                                onPress={() => setPastOrderDetail(null)}
+                                                style={styles.backButton}
+                                            />
+                                            <View style={styles.card}>
+                                                <Text>Order #{pastOrderDetail.order_id || '-'}</Text>
+                                                <Text>Status: {pastOrderDetail.status || '-'}</Text>
+                                                <Text>Date: {pastOrderDetail.order_date || '-'}</Text>
+                                                <Text>Customer: {pastOrderDetail.customer_name || '-'}</Text>
+                                                <Text>Customer Phone: {pastOrderDetail.customer_phone || '-'}</Text>
+                                                <Text>Driver: {pastOrderDetail.driver_name || '-'}</Text>
+                                                <Text>Quantity: {pastOrderDetail.quantity || '-'}</Text>
+                                                <Text>Price: {pastOrderDetail.price || '-'}</Text>
+                                            </View>
                                         </View>
-                                    ))}
+                                    ) : (
+                                        <View>
+                                            {pastOrders.length === 0 ? <Text>No past orders</Text> : null}
+                                            {pastOrders.map((item) => (
+                                                <View key={orderKey(item)} style={styles.card}>
+                                                    <Text>Order #{item.order_id || item.id}</Text>
+                                                    <Text>Status: {item.status || 'Completed'}</Text>
+                                                    <BasicButton
+                                                        title="View Details"
+                                                        onPress={() => fetchPastOrderDetail(item.order_id || item.id)}
+                                                        style={styles.fullButton}
+                                                    />
+                                                </View>
+                                            ))}
+                                        </View>
+                                    )}
                                 </View>
                             )}
                         </View>
