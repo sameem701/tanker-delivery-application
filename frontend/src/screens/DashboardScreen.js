@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Alert, BackHandler } from 'react-native';
+import { View, Text, Alert, BackHandler, StyleSheet } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { colors, spacing, radius, typography } from '../theme/tokens';
 import CustomerDashboard from './dashboard/CustomerDashboard';
 import SupplierDashboard from './dashboard/SupplierDashboard';
 import DriverDashboard from './dashboard/DriverDashboard';
@@ -58,20 +59,73 @@ export default function DashboardScreen({ route, navigation }) {
         }
     }
 
-    return (
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-            <View style={{ width: '90%', maxWidth: 420 }}>
-                <Text>Role: {role}</Text>
-                <Text>Phone: {phone}</Text>
-                <BasicButton title={loggingOut ? 'Logging out...' : 'Logout'} onPress={handleLogout} disabled={loggingOut} />
-            </View>
+    const roleLabel = role ? role.charAt(0).toUpperCase() + role.slice(1) : 'User';
 
-            {role === 'customer' && <CustomerDashboard sessionToken={sessionToken} />}
-            {role === 'supplier' && <SupplierDashboard sessionToken={sessionToken} />}
-            {role === 'driver' && <DriverDashboard sessionToken={sessionToken} />}
-            {role !== 'customer' && role !== 'supplier' && role !== 'driver' && (
-                <Text>Unknown role: {role}</Text>
-            )}
+    return (
+        <View style={styles.container}>
+            <View style={styles.header}>
+                <View>
+                    <Text style={styles.roleText}>{roleLabel}</Text>
+                    <Text style={styles.phoneText}>{phone}</Text>
+                </View>
+                <BasicButton
+                    title={loggingOut ? '...' : 'Logout'}
+                    onPress={handleLogout}
+                    disabled={loggingOut}
+                    style={styles.logoutButton}
+                />
+            </View>
+            <View style={styles.content}>
+                {role === 'customer' && <CustomerDashboard sessionToken={sessionToken} />}
+                {role === 'supplier' && <SupplierDashboard sessionToken={sessionToken} />}
+                {role === 'driver' && <DriverDashboard sessionToken={sessionToken} />}
+                {role !== 'customer' && role !== 'supplier' && role !== 'driver' && (
+                    <Text style={styles.unknownRole}>Unknown role: {role}</Text>
+                )}
+            </View>
         </View>
     );
 }
+
+const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+        backgroundColor: colors.background,
+    },
+    header: {
+        backgroundColor: colors.primary,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: spacing.md,
+        paddingTop: spacing.xl + spacing.xs,
+        paddingBottom: spacing.sm,
+    },
+    roleText: {
+        color: colors.textOnPrimary,
+        fontSize: typography.subtitle,
+        fontWeight: '700',
+    },
+    phoneText: {
+        color: colors.primaryLight,
+        fontSize: typography.small,
+        marginTop: 2,
+    },
+    logoutButton: {
+        marginTop: 0,
+        paddingVertical: 8,
+        paddingHorizontal: 14,
+        backgroundColor: 'transparent',
+        borderWidth: 1.5,
+        borderColor: colors.textOnPrimary,
+        borderRadius: radius.sm,
+    },
+    content: {
+        flex: 1,
+    },
+    unknownRole: {
+        color: colors.danger,
+        textAlign: 'center',
+        marginTop: spacing.lg,
+    },
+});

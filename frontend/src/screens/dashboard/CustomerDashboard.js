@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, Alert, ScrollView, Modal } from 'react-native';
+import { View, Text, TextInput, Alert, ScrollView, Modal, ActivityIndicator, StyleSheet } from 'react-native';
+import { colors, spacing, radius, typography, shadow } from '../../theme/tokens';
 import { Picker } from '@react-native-picker/picker';
 import {
   getCustomerQuantityPricing,
@@ -48,6 +49,17 @@ const KARACHI_AREAS = [
 const CUSTOMER_CANCELABLE_STATUSES = ['open', 'supplier_timer', 'accepted', 'ride_started', 'reached'];
 const CUSTOMER_TRACKED_STATUSES = ['supplier_timer', 'accepted', 'ride_started', 'reached'];
 const BID_WINDOW_SECONDS = 15;
+const MIN_BID = 500;
+const BID_STEP = 50;
+
+function formatDate(val) {
+  if (!val) return '-';
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return String(val);
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}/${mm}/${d.getFullYear()}`;
+}
 
 export default function CustomerDashboard({ sessionToken }) {
   const [activeOrder, setActiveOrder] = useState(null);
@@ -532,19 +544,7 @@ export default function CustomerDashboard({ sessionToken }) {
   // On mount: check history for any completed unrated order and prompt
   // (covers the case where the finished order was already rated and archived)
 
-  // When the active order transitions to 'finished', show the rating prompt immediately
-  useEffect(() => {
-    if (!activeOrder || activeOrder.status !== 'finished') return;
-    if (dismissedRatingIds.current.has(activeOrder.id)) return;
-    setRatingPromptOrder({
-      order_id: activeOrder.id,
-      quantity: activeOrder.gallons,
-      price: activeOrder.price,
-    });
-    setPromptRating(null);
-  }, [activeOrder?.status, activeOrder?.id]);
-
-  // When active order is 'finished', show rating prompt immediately (or on re-open)
+  // When active order transitions to 'finished', show rating prompt immediately (or on re-open)
   useEffect(() => {
     if (!activeOrder || activeOrder.status !== 'finished') return;
     if (dismissedRatingIds.current.has(activeOrder.id)) return;
@@ -557,13 +557,13 @@ export default function CustomerDashboard({ sessionToken }) {
   }, [activeOrder?.status, activeOrder?.id]);
 
   const visibleBids = bids.filter((item) => getRemainingSeconds(item) > 0);
+  const minBid = Math.max(MIN_BID, Number(activeOrder?.price) || MIN_BID);
 
   if (loadingCurrentOrder) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        <View style={{ width: '90%', maxWidth: 420 }}>
-          <Text>Checking active order...</Text>
-        </View>
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={styles.loadingText}>Loading...</Text>
       </View>
     );
   }
@@ -571,7 +571,7 @@ export default function CustomerDashboard({ sessionToken }) {
   const supplierTimeLeftSeconds = activeOrder ? getRemainingSupplierSeconds(activeOrder) : 0;
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={styles.container}>
       {/* Rating prompt modal */}
       <Modal
         visible={ratingPromptOrder !== null}
@@ -579,21 +579,18 @@ export default function CustomerDashboard({ sessionToken }) {
         animationType="fade"
         onRequestClose={handleDismissPrompt}
       >
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
-          <View style={{ width: '85%', maxWidth: 380, backgroundColor: '#fff', borderRadius: 8, padding: 20 }}>
-            <Text style={{ fontSize: 16, marginBottom: 4 }}>Rate Your Delivery</Text>
-            <Text style={{ color: '#555', marginBottom: 12 }}>Order #{ratingPromptOrder?.order_id} — {ratingPromptOrder?.quantity} gal @ {ratingPromptOrder?.price}</Text>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 }}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Rate Your Delivery</Text>
+            <Text style={styles.modalSubtitle}>Order #{ratingPromptOrder?.order_id} — {ratingPromptOrder?.quantity} gal @ {ratingPromptOrder?.price}</Text>
+            <View style={styles.starsRow}>
               {[1, 2, 3, 4, 5].map((star) => (
                 <BasicButton
                   key={star}
                   title={String(star)}
                   onPress={() => setPromptRating(star)}
-                  style={{
-                    width: '18%',
-                    marginTop: 0,
-                    borderWidth: promptRating === star ? 3 : 1,
-                  }}
+                  selected={promptRating === star}
+                  style={styles.starButton}
                 />
               ))}
             </View>
@@ -601,202 +598,222 @@ export default function CustomerDashboard({ sessionToken }) {
               title={promptSubmitting ? 'Submitting...' : promptRating != null ? `Submit ${promptRating}/5` : 'Select a rating above'}
               onPress={handleSubmitPromptRating}
               disabled={promptRating == null || promptSubmitting}
-              style={{ marginTop: 0, marginBottom: 8 }}
+              style={styles.modalActionButton}
             />
             <BasicButton
               title="Not now"
               onPress={handleDismissPrompt}
-              style={{ marginTop: 0 }}
+              style={styles.ghostButton}
+              textStyle={{ color: colors.textSecondary }}
             />
           </View>
         </View>
       </Modal>
+
       {/* Tab bar */}
-      <View style={{ alignItems: 'center', paddingTop: 8 }}>
-        <View style={{ width: '90%', maxWidth: 420, flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
-          <BasicButton title="Order" onPress={() => setActiveTab('order')} style={{ width: '49%', marginTop: 0 }} />
-          <BasicButton title="History" onPress={() => setActiveTab('history')} style={{ width: '49%', marginTop: 0 }} />
-        </View>
+      <View style={styles.tabBar}>
+        <BasicButton title="Order" selected={activeTab === 'order'} onPress={() => setActiveTab('order')} style={styles.tabButton} />
+        <BasicButton title="History" selected={activeTab === 'history'} onPress={() => setActiveTab('history')} style={styles.tabButton} />
       </View>
 
       {activeTab === 'order' && (
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-          <View style={{ width: '90%', maxWidth: 420 }}>
-            {activeOrder ? (
-              <>
-                <Text>Order Status</Text>
-                <Text>Order ID: {activeOrder.id}</Text>
-                <Text>Address: {activeOrder.address}</Text>
-                <Text>Gallons: {activeOrder.gallons}</Text>
-                <Text>Price: {activeOrder.price}</Text>
-                <Text>Status: {activeOrder.status}</Text>
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+          {activeOrder ? (
+            <View>
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Active Order #{activeOrder.id}</Text>
+                <Text style={styles.row}><Text style={styles.label}>Address: </Text><Text style={styles.value}>{activeOrder.address}</Text></Text>
+                <Text style={styles.row}><Text style={styles.label}>Gallons: </Text><Text style={styles.value}>{activeOrder.gallons}</Text></Text>
+                <Text style={styles.row}><Text style={styles.label}>Price: </Text><Text style={styles.value}>{activeOrder.price}</Text></Text>
+                <Text style={styles.row}><Text style={styles.label}>Status: </Text><Text style={styles.value}>{activeOrder.status}</Text></Text>
+              </View>
 
-                {activeOrder.status === 'supplier_timer' ? (
-                  <View style={{ borderWidth: 1, marginTop: 8, padding: 8 }}>
-                    <Text>Supplier Confirmation Window</Text>
-                    <Text>Time Left: {formatDuration(supplierTimeLeftSeconds)}</Text>
-                    <Text>Supplier: {activeOrder.supplier_name || '-'}</Text>
-                    <Text>Supplier Contact: {activeOrder.supplier_business_contact || '-'}</Text>
-                    <Text>Supplier Yard: {activeOrder.supplier_yard_location || '-'}</Text>
+              {activeOrder.status === 'supplier_timer' ? (
+                <View style={styles.infoCard}>
+                  <Text style={styles.infoTitle}>Supplier Confirmation Window</Text>
+                  <Text style={styles.row}><Text style={styles.label}>Time Left: </Text><Text style={styles.value}>{formatDuration(supplierTimeLeftSeconds)}</Text></Text>
+                  <Text style={styles.row}><Text style={styles.label}>Supplier: </Text><Text style={styles.value}>{activeOrder.supplier_name || '-'}</Text></Text>
+                  <Text style={styles.row}><Text style={styles.label}>Contact: </Text><Text style={styles.value}>{activeOrder.supplier_business_contact || '-'}</Text></Text>
+                  <Text style={styles.row}><Text style={styles.label}>Yard: </Text><Text style={styles.value}>{activeOrder.supplier_yard_location || '-'}</Text></Text>
+                </View>
+              ) : null}
+
+              {(activeOrder.status === 'accepted' || activeOrder.status === 'ride_started' || activeOrder.status === 'reached') ? (
+                <View style={styles.infoCard}>
+                  <Text style={styles.infoTitle}>Order Progress</Text>
+                  <Text style={styles.row}><Text style={styles.label}>Supplier: </Text><Text style={styles.value}>{activeOrder.supplier_name || '-'}</Text></Text>
+                  <Text style={styles.row}><Text style={styles.label}>Contact: </Text><Text style={styles.value}>{activeOrder.supplier_business_contact || '-'}</Text></Text>
+                  <Text style={styles.row}><Text style={styles.label}>Driver: </Text><Text style={styles.value}>{activeOrder.driver_name || 'Not assigned yet'}</Text></Text>
+                  <Text style={styles.row}><Text style={styles.label}>Driver Phone: </Text><Text style={styles.value}>{activeOrder.driver_phone || '-'}</Text></Text>
+                </View>
+              ) : null}
+
+              {activeOrder.status === 'open' ? (
+                <View>
+                  <View style={styles.card}>
+                    <Text style={styles.cardTitle}>Update Your Bid</Text>
+                    <Text style={styles.hint}>Current: {activeOrder.price} · Min: {minBid} · Step: {BID_STEP}</Text>
+                    <View style={styles.bidUpdateRow}>
+                      <BasicButton
+                        title="−"
+                        onPress={() => setBidUpdatePrice(v => String(Math.max(minBid, (Number(v) || minBid) - BID_STEP)))}
+                        disabled={!bidUpdatePrice || Number(bidUpdatePrice) <= minBid}
+                        style={styles.bidStepButton}
+                      />
+                      <TextInput
+                        value={bidUpdatePrice}
+                        onChangeText={setBidUpdatePrice}
+                        keyboardType="numeric"
+                        style={styles.bidValueInput}
+                        placeholder={String(minBid)}
+                        placeholderTextColor={colors.textSecondary}
+                      />
+                      <BasicButton
+                        title="+"
+                        onPress={() => setBidUpdatePrice(v => String((Number(v) || minBid) + BID_STEP))}
+                        style={styles.bidStepButton}
+                      />
+                    </View>
+                    <BasicButton title="Update Bid" onPress={handleUpdateBid} style={styles.fullButton} />
                   </View>
-                ) : null}
 
-                {(activeOrder.status === 'accepted' || activeOrder.status === 'ride_started' || activeOrder.status === 'reached') ? (
-                  <View style={{ borderWidth: 1, marginTop: 8, padding: 8 }}>
-                    <Text>Order Progress Details</Text>
-                    <Text>Supplier: {activeOrder.supplier_name || '-'}</Text>
-                    <Text>Supplier Contact: {activeOrder.supplier_business_contact || '-'}</Text>
-                    <Text>Driver: {activeOrder.driver_name || 'Not assigned yet'}</Text>
-                    <Text>Driver Phone: {activeOrder.driver_phone || '-'}</Text>
-                  </View>
-                ) : null}
-
-                {activeOrder.status === 'open' ? (
-                  <View>
-                    <Text>Update Your Bid</Text>
-                    <TextInput
-                      value={bidUpdatePrice}
-                      onChangeText={setBidUpdatePrice}
-                      keyboardType="numeric"
-                      style={{ borderWidth: 1 }}
-                    />
-                    <Text>Allowed: +50, +100, +150, ...</Text>
-                    <BasicButton title="Update Bid" onPress={handleUpdateBid} />
-
-                    <Text>Incoming Bids</Text>
-                    {loadingBids ? <Text>Refreshing bids...</Text> : null}
-                    {visibleBids.length === 0 ? <Text>No live bids right now</Text> : null}
+                  <View style={styles.card}>
+                    <Text style={styles.cardTitle}>Incoming Bids</Text>
+                    {loadingBids ? <Text style={styles.hint}>Refreshing bids...</Text> : null}
+                    {visibleBids.length === 0 ? <Text style={styles.emptyText}>No live bids right now</Text> : null}
                     {visibleBids.map((item) => {
                       const remainingSeconds = getRemainingSeconds(item);
                       return (
-                        <View key={String(item.bid_id)} style={{ borderWidth: 1, marginTop: 8, padding: 8 }}>
-                          <Text>Supplier: {item.supplier_name || '-'}</Text>
-                          <Text>Bid Price: {item.bid_price}</Text>
-                          <Text>Expires In: {remainingSeconds}s</Text>
-                          <BasicButton
-                            title="Accept"
-                            onPress={() => handleAcceptBid(item.bid_id, remainingSeconds)}
-                            disabled={remainingSeconds <= 0}
-                          />
-                          <BasicButton
-                            title="Reject"
-                            onPress={() => handleRejectBid(item.bid_id)}
-                            disabled={remainingSeconds <= 0}
-                          />
+                        <View key={String(item.bid_id)} style={styles.bidCard}>
+                          <Text style={styles.row}><Text style={styles.label}>Supplier: </Text><Text style={styles.value}>{item.supplier_name || '-'}</Text></Text>
+                          <Text style={styles.row}><Text style={styles.label}>Bid Price: </Text><Text style={styles.value}>{item.bid_price}</Text></Text>
+                          <Text style={styles.row}><Text style={styles.label}>Expires In: </Text><Text style={styles.value}>{remainingSeconds}s</Text></Text>
+                          <View style={styles.actionRow}>
+                            <BasicButton
+                              title="Accept"
+                              onPress={() => handleAcceptBid(item.bid_id, remainingSeconds)}
+                              disabled={remainingSeconds <= 0}
+                              style={styles.actionButton}
+                            />
+                            <BasicButton
+                              title="Reject"
+                              onPress={() => handleRejectBid(item.bid_id)}
+                              disabled={remainingSeconds <= 0}
+                              style={[styles.actionButton, styles.dangerButton]}
+                            />
+                          </View>
                         </View>
                       );
                     })}
                   </View>
-                ) : null}
+                </View>
+              ) : null}
 
-                {CUSTOMER_CANCELABLE_STATUSES.includes(activeOrder.status) ? (
-                  <BasicButton title="Cancel Order" onPress={handleCancelOrder} />
-                ) : (
-                  <Text>Customer cannot cancel in this status.</Text>
-                )}
-              </>
-            ) : (
-              <>
-                <Text>Start A New Order</Text>
-                {loadingPricing ? <Text>Loading quantities...</Text> : null}
-                {!sessionToken ? <Text>Session missing. Login again to place an order.</Text> : null}
+              {CUSTOMER_CANCELABLE_STATUSES.includes(activeOrder.status) ? (
+                <BasicButton title="Cancel Order" onPress={handleCancelOrder} style={styles.dangerButton} />
+              ) : (
+                <Text style={styles.hint}>Order cannot be cancelled at this stage.</Text>
+              )}
+            </View>
+          ) : (
+            <View>
+              <Text style={styles.pageTitle}>Start A New Order</Text>
+              {loadingPricing ? <Text style={styles.hint}>Loading quantities...</Text> : null}
+              {!sessionToken ? <Text style={styles.errorText}>Session missing. Login again.</Text> : null}
 
-                <Text>Address</Text>
+              <View style={styles.card}>
+                <Text style={styles.fieldLabel}>Address</Text>
                 <TextInput
                   value={address}
                   onChangeText={setAddress}
-                  style={{ borderWidth: 1 }}
+                  style={styles.input}
+                  placeholder="Street address"
+                  placeholderTextColor={colors.textSecondary}
                 />
 
-                <Text>District</Text>
-                <Picker selectedValue={district} onValueChange={setDistrict}>
-                  {KARACHI_AREAS.map((area) => (
-                    <Picker.Item key={area} label={area} value={area} />
-                  ))}
-                </Picker>
+                <Text style={styles.fieldLabel}>District</Text>
+                <View style={styles.pickerWrapper}>
+                  <Picker selectedValue={district} onValueChange={setDistrict}>
+                    {KARACHI_AREAS.map((area) => (
+                      <Picker.Item key={area} label={area} value={area} />
+                    ))}
+                  </Picker>
+                </View>
 
-                <Text>Gallons</Text>
-                <Picker selectedValue={gallons} onValueChange={handleGallonsChange}>
-                  {quantityPricing.map((option) => (
-                    <Picker.Item
-                      key={String(option.quantity_in_gallon)}
-                      label={String(option.quantity_in_gallon)}
-                      value={String(option.quantity_in_gallon)}
-                    />
-                  ))}
-                </Picker>
+                <Text style={styles.fieldLabel}>Gallons</Text>
+                <View style={styles.pickerWrapper}>
+                  <Picker selectedValue={gallons} onValueChange={handleGallonsChange}>
+                    {quantityPricing.map((option) => (
+                      <Picker.Item
+                        key={String(option.quantity_in_gallon)}
+                        label={String(option.quantity_in_gallon)}
+                        value={String(option.quantity_in_gallon)}
+                      />
+                    ))}
+                  </Picker>
+                </View>
 
-                <TextInput
-                  value={gallons}
-                  editable={false}
-                  style={{ borderWidth: 1 }}
-                />
-
-                <Text>Price Offer</Text>
+                <Text style={styles.fieldLabel}>Price Offer</Text>
                 <TextInput
                   value={price}
                   onChangeText={setPrice}
                   keyboardType="numeric"
-                  style={{ borderWidth: 1 }}
+                  style={styles.input}
+                  placeholder="Your price offer"
+                  placeholderTextColor={colors.textSecondary}
                 />
 
-                <BasicButton title="Start Order" onPress={handleStartOrder} disabled={loadingPricing || !sessionToken} />
-              </>
-            )}
-          </View>
-        </View>
+                <BasicButton title="Start Order" onPress={handleStartOrder} disabled={loadingPricing || !sessionToken} style={styles.fullButton} />
+              </View>
+            </View>
+          )}
+        </ScrollView>
       )}
 
       {activeTab === 'history' && (
-        <ScrollView
-          style={{ width: '90%', maxWidth: 420, alignSelf: 'center' }}
-          contentContainerStyle={{ paddingBottom: 16 }}
-        >
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
           {historyDetail ? (
-            <View style={{ marginTop: 8 }}>
+            <View>
               <BasicButton
-                title="← Back to History"
+                title="← Back"
                 onPress={() => setHistoryDetail(null)}
-                style={{ alignSelf: 'flex-start', marginBottom: 8 }}
+                style={styles.backButton}
               />
-              <View style={{ borderWidth: 1, borderColor: '#d0d0d0', borderRadius: 4, padding: 10 }}>
-                <Text>Order #{historyDetail.order_id}</Text>
-                <Text>Status: {historyDetail.status || '-'}</Text>
-                <Text>Date: {historyDetail.order_date || '-'}</Text>
-                <Text>Location: {historyDetail.customer_location || '-'}</Text>
-                <Text>Gallons: {historyDetail.quantity || '-'}</Text>
-                <Text>Price: {historyDetail.price || '-'}</Text>
-                <Text>Supplier: {historyDetail.supplier_name || '-'}</Text>
-                <Text>Driver: {historyDetail.driver_name || '-'}</Text>
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Order #{historyDetail.order_id}</Text>
+                <Text style={styles.row}><Text style={styles.label}>Status: </Text><Text style={styles.value}>{historyDetail.status || '-'}</Text></Text>
+                <Text style={styles.row}><Text style={styles.label}>Date: </Text><Text style={styles.value}>{formatDate(historyDetail.order_date)}</Text></Text>
+                <Text style={styles.row}><Text style={styles.label}>Location: </Text><Text style={styles.value}>{historyDetail.customer_location || '-'}</Text></Text>
+                <Text style={styles.row}><Text style={styles.label}>Gallons: </Text><Text style={styles.value}>{historyDetail.quantity || '-'}</Text></Text>
+                <Text style={styles.row}><Text style={styles.label}>Price: </Text><Text style={styles.value}>{historyDetail.price || '-'}</Text></Text>
+                <Text style={styles.row}><Text style={styles.label}>Supplier: </Text><Text style={styles.value}>{historyDetail.supplier_name || '-'}</Text></Text>
+                <Text style={styles.row}><Text style={styles.label}>Driver: </Text><Text style={styles.value}>{historyDetail.driver_name || '-'}</Text></Text>
               </View>
 
               {historyDetail.status === 'completed' ? (
-                <View style={{ borderWidth: 1, borderColor: '#d0d0d0', borderRadius: 4, padding: 10, marginTop: 8 }}>
-                  <Text>Rate This Delivery</Text>
+                <View style={styles.card}>
+                  <Text style={styles.cardTitle}>Rate This Delivery</Text>
                   {historyDetail.customer_rating != null ? (
-                    <Text>Your rating: {historyDetail.customer_rating}/5</Text>
+                    <Text style={styles.value}>Your rating: {historyDetail.customer_rating}/5 ⭐</Text>
                   ) : (
                     <View>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
+                      <View style={styles.starsRow}>
                         {[1, 2, 3, 4, 5].map((star) => (
                           <BasicButton
                             key={star}
                             title={String(star)}
                             onPress={() => setSelectedRating(star)}
-                            style={{
-                              width: '18%',
-                              marginTop: 0,
-                              borderWidth: selectedRating === star ? 2 : 1,
-                            }}
+                            selected={selectedRating === star}
+                            style={styles.starButton}
                           />
                         ))}
                       </View>
                       {selectedRating != null ? (
                         <BasicButton
-                          title={ratingSubmitting ? 'Submitting...' : `Submit Rating`}
+                          title={ratingSubmitting ? 'Submitting...' : 'Submit Rating'}
                           onPress={handleSubmitRating}
                           disabled={ratingSubmitting}
-                          style={{ alignSelf: 'stretch', marginTop: 8 }}
+                          style={styles.fullButton}
                         />
                       ) : null}
                     </View>
@@ -805,28 +822,21 @@ export default function CustomerDashboard({ sessionToken }) {
               ) : null}
             </View>
           ) : (
-            <View style={{ marginTop: 8 }}>
-              <Text>Order History</Text>
-              <BasicButton
-                title="Refresh"
-                onPress={fetchHistory}
-                style={{ alignSelf: 'stretch', marginTop: 8 }}
-              />
-              {loadingHistory ? <Text>Loading history...</Text> : null}
-              {!loadingHistory && historyOrders.length === 0 ? <Text>No past orders.</Text> : null}
+            <View>
+              <Text style={styles.pageTitle}>Order History</Text>
+              <BasicButton title="Refresh" onPress={fetchHistory} style={styles.fullButton} />
+              {loadingHistory ? <Text style={styles.hint}>Loading history...</Text> : null}
+              {!loadingHistory && historyOrders.length === 0 ? <Text style={styles.emptyText}>No past orders yet.</Text> : null}
               {historyOrders.map((item) => (
-                <View
-                  key={String(item.order_id)}
-                  style={{ borderWidth: 1, borderColor: '#d0d0d0', borderRadius: 4, padding: 10, marginTop: 8 }}
-                >
-                  <Text>Order #{item.order_id}</Text>
-                  <Text>Status: {item.status || '-'}</Text>
-                  <Text>Date: {item.order_date || '-'}</Text>
-                  <Text>Qty: {item.quantity || '-'} | Price: {item.price || '-'}</Text>
+                <View key={String(item.order_id)} style={styles.card}>
+                  <Text style={styles.cardTitle}>Order #{item.order_id}</Text>
+                  <Text style={styles.row}><Text style={styles.label}>Status: </Text><Text style={styles.value}>{item.status || '-'}</Text></Text>
+                  <Text style={styles.row}><Text style={styles.label}>Date: </Text><Text style={styles.value}>{formatDate(item.order_date)}</Text></Text>
+                  <Text style={styles.row}><Text style={styles.label}>Qty: </Text><Text style={styles.value}>{item.quantity || '-'}</Text><Text style={styles.label}> | Price: </Text><Text style={styles.value}>{item.price || '-'}</Text></Text>
                   <BasicButton
                     title="View Details"
                     onPress={() => fetchHistoryDetail(item.order_id)}
-                    style={{ alignSelf: 'stretch', marginTop: 4 }}
+                    style={styles.fullButton}
                   />
                 </View>
               ))}
@@ -837,3 +847,227 @@ export default function CustomerDashboard({ sessionToken }) {
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  center: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.background,
+  },
+  loadingText: {
+    marginTop: spacing.sm,
+    color: colors.textSecondary,
+    fontSize: typography.body,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: spacing.xs,
+  },
+  tabButton: {
+    flex: 1,
+    marginTop: 0,
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: spacing.md,
+    paddingBottom: spacing.xl,
+  },
+  pageTitle: {
+    fontSize: typography.subtitle,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: spacing.sm,
+  },
+  card: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+    ...shadow.sm,
+  },
+  cardTitle: {
+    fontSize: typography.body,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: spacing.xs,
+  },
+  infoCard: {
+    backgroundColor: colors.primaryLight,
+    borderRadius: radius.md,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.primary,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  infoTitle: {
+    fontSize: typography.body,
+    fontWeight: '700',
+    color: colors.primaryDark,
+    marginBottom: spacing.xs,
+  },
+  bidCard: {
+    backgroundColor: colors.background,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    marginTop: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  row: {
+    fontSize: typography.label,
+    color: colors.textSecondary,
+    marginBottom: 2,
+  },
+  label: {
+    fontSize: typography.label,
+    color: colors.textSecondary,
+  },
+  value: {
+    color: colors.textPrimary,
+    fontWeight: '500',
+  },
+  hint: {
+    fontSize: typography.small,
+    color: colors.textSecondary,
+    marginTop: 4,
+  },
+  emptyText: {
+    fontSize: typography.body,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    marginTop: spacing.lg,
+  },
+  errorText: {
+    fontSize: typography.label,
+    color: colors.danger,
+    marginBottom: spacing.sm,
+  },
+  fieldLabel: {
+    fontSize: typography.label,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    marginTop: spacing.sm,
+    marginBottom: 4,
+  },
+  input: {
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 10,
+    fontSize: typography.body,
+    color: colors.textPrimary,
+    backgroundColor: colors.surface,
+  },
+  pickerWrapper: {
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface,
+    overflow: 'hidden',
+    marginBottom: 4,
+  },
+  fullButton: {
+    marginTop: spacing.sm,
+  },
+  dangerButton: {
+    backgroundColor: colors.danger,
+  },
+  ghostButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    marginTop: spacing.xs,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+    marginTop: spacing.xs,
+  },
+  actionButton: {
+    flex: 1,
+    marginTop: 0,
+  },
+  backButton: {
+    alignSelf: 'flex-start',
+    marginBottom: spacing.sm,
+    marginTop: 0,
+  },
+  bidUpdateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginTop: spacing.xs,
+  },
+  bidStepButton: {
+    width: 44,
+    height: 44,
+    marginTop: 0,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    borderRadius: radius.sm,
+  },
+  bidValueInput: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 10,
+    fontSize: typography.body,
+    color: colors.textPrimary,
+    backgroundColor: colors.surface,
+    textAlign: 'center',
+  },
+  starsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginVertical: spacing.sm,
+    gap: 4,
+  },
+  starButton: {
+    flex: 1,
+    marginTop: 0,
+    paddingVertical: 10,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: colors.overlay,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBox: {
+    width: '88%',
+    maxWidth: 380,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    ...shadow.md,
+  },
+  modalTitle: {
+    fontSize: typography.subtitle,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: 4,
+  },
+  modalSubtitle: {
+    fontSize: typography.label,
+    color: colors.textSecondary,
+    marginBottom: spacing.sm,
+  },
+  modalActionButton: {
+    marginTop: spacing.xs,
+  },
+});

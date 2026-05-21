@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, View, StyleSheet } from 'react-native';
+import { colors } from '../theme/tokens';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -45,11 +46,20 @@ function StartupScreen({ navigation }) {
     }, [navigation]);
 
     return (
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-            <ActivityIndicator size="large" />
+        <View style={styles.screen}>
+            <ActivityIndicator size="large" color={colors.primary} />
         </View>
     );
 }
+
+const styles = StyleSheet.create({
+    screen: {
+        flex: 1,
+        backgroundColor: colors.background,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+});
 
 export default function AppNavigation() {
     return (

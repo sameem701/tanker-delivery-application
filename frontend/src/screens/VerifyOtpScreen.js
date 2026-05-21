@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Text, View, TextInput } from 'react-native';
+import { ActivityIndicator, Text, View, TextInput, StyleSheet, ScrollView } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { colors, spacing, radius, typography, shadow } from '../theme/tokens';
 import { storeOtp, verifyOtp } from '../api/authApi';
 import BasicButton from '../components/ui/BasicButton';
 
@@ -95,43 +96,138 @@ export default function VerifyOtpScreen({ route, navigation }) {
     }
 
     return (
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-            <View style={{ width: '90%', maxWidth: 420 }}>
-                <Text>Tanker Delivery</Text>
-                <Text>Enter Verification Code</Text>
+        <View style={styles.screen}>
+            <View style={styles.card}>
+                <Text style={styles.appName}>Tanker Delivery</Text>
+                <Text style={styles.title}>Verify OTP</Text>
+                <Text style={styles.subtitle}>Code sent to {phone}</Text>
 
-                {errorMessage ? <Text>{errorMessage}</Text> : null}
-                {infoMessage ? <Text>{infoMessage}</Text> : null}
+                {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
+                {infoMessage ? <Text style={styles.infoText}>{infoMessage}</Text> : null}
 
-                <View>
-                    <Text>OTP sent to {phone}</Text>
-                    <Text>
-                        {cooldownSeconds > 0
-                            ? `Request new OTP in ${cooldownSeconds}s`
-                            : 'You can request a new OTP now.'}
-                    </Text>
-                    <Text>Verification Code</Text>
-                    <TextInput
-                        placeholder="Enter OTP"
-                        keyboardType="number-pad"
-                        value={otpCode}
-                        onChangeText={setOtpCode}
-                        maxLength={6}
-                        style={{ borderWidth: 1 }}
-                    />
-                    <BasicButton title="Verify OTP" onPress={handleVerifyOtp} disabled={loading || !canVerifyOtp} />
-                    <View>
-                        <BasicButton title="Request New OTP" onPress={handleResendOtp} disabled={loading || !canResendOtp} />
-                    </View>
-                </View>
+                <Text style={styles.cooldownText}>
+                    {cooldownSeconds > 0
+                        ? `Resend available in ${cooldownSeconds}s`
+                        : 'You can request a new code now.'}
+                </Text>
 
-                {loading && (
-                    <View>
-                        <ActivityIndicator size="small" />
-                        <Text>Please wait...</Text>
-                    </View>
-                )}
+                <Text style={styles.fieldLabel}>Verification Code</Text>
+                <TextInput
+                    placeholder="Enter 6-digit code"
+                    keyboardType="number-pad"
+                    value={otpCode}
+                    onChangeText={setOtpCode}
+                    maxLength={6}
+                    style={[styles.input, styles.otpInput]}
+                    placeholderTextColor={colors.textSecondary}
+                />
+
+                <BasicButton
+                    title={loading ? 'Verifying...' : 'Verify OTP'}
+                    onPress={handleVerifyOtp}
+                    disabled={loading || !canVerifyOtp}
+                    style={styles.button}
+                />
+                <BasicButton
+                    title={cooldownSeconds > 0 ? `Resend in ${cooldownSeconds}s` : 'Request New OTP'}
+                    onPress={handleResendOtp}
+                    disabled={loading || !canResendOtp}
+                    style={styles.secondaryButton}
+                />
+
+                {loading ? (
+                    <ActivityIndicator size="small" color={colors.primary} style={styles.spinner} />
+                ) : null}
             </View>
         </View>
     );
 }
+
+const styles = StyleSheet.create({
+    screen: {
+        flex: 1,
+        backgroundColor: colors.background,
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: spacing.lg,
+    },
+    card: {
+        width: '100%',
+        maxWidth: 420,
+        backgroundColor: colors.surface,
+        borderRadius: radius.lg,
+        padding: spacing.lg,
+        borderWidth: 1,
+        borderColor: colors.border,
+        ...shadow.md,
+    },
+    appName: {
+        fontSize: typography.title,
+        fontWeight: '800',
+        color: colors.primary,
+        textAlign: 'center',
+        marginBottom: spacing.xs,
+    },
+    title: {
+        fontSize: typography.subtitle,
+        fontWeight: '700',
+        color: colors.textPrimary,
+        textAlign: 'center',
+        marginBottom: 4,
+    },
+    subtitle: {
+        fontSize: typography.label,
+        color: colors.textSecondary,
+        textAlign: 'center',
+        marginBottom: spacing.xs,
+    },
+    cooldownText: {
+        fontSize: typography.small,
+        color: colors.textSecondary,
+        textAlign: 'center',
+        marginBottom: spacing.md,
+    },
+    errorText: {
+        fontSize: typography.label,
+        color: colors.danger,
+        marginBottom: spacing.sm,
+        textAlign: 'center',
+    },
+    infoText: {
+        fontSize: typography.label,
+        color: colors.success,
+        marginBottom: spacing.xs,
+        textAlign: 'center',
+    },
+    fieldLabel: {
+        fontSize: typography.label,
+        fontWeight: '600',
+        color: colors.textSecondary,
+        marginBottom: 6,
+    },
+    input: {
+        borderWidth: 1.5,
+        borderColor: colors.border,
+        borderRadius: radius.sm,
+        paddingHorizontal: spacing.sm,
+        paddingVertical: 11,
+        fontSize: typography.body,
+        color: colors.textPrimary,
+        backgroundColor: colors.surface,
+    },
+    otpInput: {
+        textAlign: 'center',
+        fontSize: typography.subtitle,
+        letterSpacing: 6,
+    },
+    button: {
+        marginTop: spacing.md,
+    },
+    secondaryButton: {
+        marginTop: spacing.xs,
+        backgroundColor: colors.primaryLight,
+    },
+    spinner: {
+        marginTop: spacing.sm,
+    },
+});

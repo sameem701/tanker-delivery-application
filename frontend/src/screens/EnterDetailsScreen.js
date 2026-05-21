@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { ActivityIndicator, Text, View, TextInput } from 'react-native';
+import { ActivityIndicator, Text, View, TextInput, StyleSheet, ScrollView } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { submitCustomerDetails, submitDriverDetails, submitSupplierDetails } from '../api/authApi';
 import BasicButton from '../components/ui/BasicButton';
+import { colors, spacing, radius, typography, shadow } from '../theme/tokens';
 
 function getErrorMessage(error) {
     return error?.message || 'Something went wrong. Please try again.';
@@ -57,52 +58,159 @@ export default function EnterDetailsScreen({ route, navigation }) {
     }
 
     return (
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-            <View style={{ width: '90%', maxWidth: 420 }}>
-                <Text>Tanker Delivery</Text>
-                <Text>Enter Details</Text>
+        <View style={styles.screen}>
+            <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+                <View style={styles.card}>
+                    <Text style={styles.appName}>Tanker Delivery</Text>
+                    <Text style={styles.title}>Create Account</Text>
+                    <Text style={styles.subtitle}>Choose your role and fill in your details</Text>
 
-                {errorMessage ? <Text>{errorMessage}</Text> : null}
+                    {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
 
-                <View>
-                    <Text>Choose role and submit details.</Text>
-                    <Picker selectedValue={selectedRole} onValueChange={setSelectedRole}>
-                        <Picker.Item label="customer" value="customer" />
-                        <Picker.Item label="supplier" value="supplier" />
-                        <Picker.Item label="driver" value="driver" />
-                    </Picker>
+                    <Text style={styles.fieldLabel}>Role</Text>
+                    <View style={styles.pickerWrapper}>
+                        <Picker selectedValue={selectedRole} onValueChange={setSelectedRole}>
+                            <Picker.Item label="Customer" value="customer" />
+                            <Picker.Item label="Supplier" value="supplier" />
+                            <Picker.Item label="Driver" value="driver" />
+                        </Picker>
+                    </View>
 
-                    <Text>Name</Text>
-                    <TextInput placeholder="Enter your name" value={name} onChangeText={setName} style={{ borderWidth: 1 }} />
+                    <Text style={styles.fieldLabel}>Full Name</Text>
+                    <TextInput
+                        placeholder="Enter your name"
+                        value={name}
+                        onChangeText={setName}
+                        style={styles.input}
+                        placeholderTextColor={colors.textSecondary}
+                    />
 
                     {selectedRole === 'customer' ? (
                         <View>
-                            <Text>Home Address (optional)</Text>
-                            <TextInput placeholder="Enter home address" value={homeAddress} onChangeText={setHomeAddress} style={{ borderWidth: 1 }} />
+                            <Text style={styles.fieldLabel}>Home Address (optional)</Text>
+                            <TextInput
+                                placeholder="Enter home address"
+                                value={homeAddress}
+                                onChangeText={setHomeAddress}
+                                style={styles.input}
+                                placeholderTextColor={colors.textSecondary}
+                            />
                         </View>
                     ) : null}
 
                     {selectedRole === 'supplier' ? (
                         <View>
-                            <Text>Yard Location</Text>
-                            <TextInput placeholder="Enter yard location" value={yardLocation} onChangeText={setYardLocation} style={{ borderWidth: 1 }} />
-                            <Text>Business Contact</Text>
-                            <TextInput placeholder="Enter business contact" value={businessContact} onChangeText={setBusinessContact} style={{ borderWidth: 1 }} />
+                            <Text style={styles.fieldLabel}>Yard Location</Text>
+                            <TextInput
+                                placeholder="Enter yard location"
+                                value={yardLocation}
+                                onChangeText={setYardLocation}
+                                style={styles.input}
+                                placeholderTextColor={colors.textSecondary}
+                            />
+                            <Text style={styles.fieldLabel}>Business Contact</Text>
+                            <TextInput
+                                placeholder="Enter business contact number"
+                                value={businessContact}
+                                onChangeText={setBusinessContact}
+                                style={styles.input}
+                                placeholderTextColor={colors.textSecondary}
+                                keyboardType="phone-pad"
+                            />
                         </View>
                     ) : null}
 
-                    <View>
-                        <BasicButton title="Submit Details" onPress={handleSubmitDetails} disabled={loading || !canSubmitDetails} />
-                    </View>
-                </View>
+                    <BasicButton
+                        title={loading ? 'Submitting...' : 'Submit Details'}
+                        onPress={handleSubmitDetails}
+                        disabled={loading || !canSubmitDetails}
+                        style={styles.button}
+                    />
 
-                {loading && (
-                    <View>
-                        <ActivityIndicator size="small" />
-                        <Text>Please wait...</Text>
-                    </View>
-                )}
-            </View>
+                    {loading ? (
+                        <ActivityIndicator size="small" color={colors.primary} style={styles.spinner} />
+                    ) : null}
+                </View>
+            </ScrollView>
         </View>
     );
 }
+
+const styles = StyleSheet.create({
+    screen: {
+        flex: 1,
+        backgroundColor: colors.background,
+    },
+    scrollContent: {
+        flexGrow: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: spacing.lg,
+    },
+    card: {
+        width: '100%',
+        maxWidth: 420,
+        backgroundColor: colors.surface,
+        borderRadius: radius.lg,
+        padding: spacing.lg,
+        borderWidth: 1,
+        borderColor: colors.border,
+        ...shadow.md,
+    },
+    appName: {
+        fontSize: typography.title,
+        fontWeight: '800',
+        color: colors.primary,
+        textAlign: 'center',
+        marginBottom: spacing.xs,
+    },
+    title: {
+        fontSize: typography.subtitle,
+        fontWeight: '700',
+        color: colors.textPrimary,
+        textAlign: 'center',
+        marginBottom: 4,
+    },
+    subtitle: {
+        fontSize: typography.label,
+        color: colors.textSecondary,
+        textAlign: 'center',
+        marginBottom: spacing.md,
+    },
+    errorText: {
+        fontSize: typography.label,
+        color: colors.danger,
+        marginBottom: spacing.sm,
+        textAlign: 'center',
+    },
+    fieldLabel: {
+        fontSize: typography.label,
+        fontWeight: '600',
+        color: colors.textSecondary,
+        marginTop: spacing.sm,
+        marginBottom: 6,
+    },
+    input: {
+        borderWidth: 1.5,
+        borderColor: colors.border,
+        borderRadius: radius.sm,
+        paddingHorizontal: spacing.sm,
+        paddingVertical: 11,
+        fontSize: typography.body,
+        color: colors.textPrimary,
+        backgroundColor: colors.surface,
+    },
+    pickerWrapper: {
+        borderWidth: 1.5,
+        borderColor: colors.border,
+        borderRadius: radius.sm,
+        backgroundColor: colors.surface,
+        overflow: 'hidden',
+    },
+    button: {
+        marginTop: spacing.md,
+    },
+    spinner: {
+        marginTop: spacing.sm,
+    },
+});

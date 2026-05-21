@@ -1,25 +1,42 @@
-import { Pressable, Text } from 'react-native';
+import { Pressable, Text, StyleSheet } from 'react-native';
+import { colors, radius, typography } from '../../theme/tokens';
 
-export default function BasicButton({ title, onPress, disabled = false, style, textStyle }) {
+export default function BasicButton({ title, onPress, disabled = false, style, textStyle, selected = false }) {
     return (
         <Pressable
             onPress={disabled ? undefined : onPress}
+            android_ripple={{ color: colors.primaryDark }}
             style={[
-                {
-                    borderWidth: 1,
-                    borderColor: '#000',
-                    paddingVertical: 8,
-                    paddingHorizontal: 12,
-                    borderRadius: 4,
-                    marginTop: 8,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                },
+                styles.button,
+                selected ? styles.selected : null,
                 style,
-                disabled ? { opacity: 0.5 } : null,
+                disabled ? styles.disabled : null,
             ]}
         >
-            <Text style={textStyle}>{title}</Text>
+            <Text style={[styles.text, textStyle]}>{title}</Text>
         </Pressable>
     );
 }
+
+const styles = StyleSheet.create({
+    button: {
+        backgroundColor: colors.primary,
+        paddingVertical: 11,
+        paddingHorizontal: 16,
+        borderRadius: radius.sm,
+        marginTop: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    selected: {
+        backgroundColor: colors.primaryDark,
+    },
+    disabled: {
+        opacity: 0.45,
+    },
+    text: {
+        color: colors.textOnPrimary,
+        fontSize: typography.label,
+        fontWeight: '600',
+    },
+});

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Alert, ScrollView, StyleSheet, Modal } from 'react-native';
+import { View, Text, Alert, ScrollView, StyleSheet, Modal, ActivityIndicator } from 'react-native';
+import { colors, spacing, radius, typography, shadow } from '../../theme/tokens';
 import BasicButton from '../../components/ui/BasicButton';
 import {
   getCurrentDriverOrder,
@@ -13,6 +14,15 @@ import {
   listDriverHistory,
   getDriverHistoryDetails,
 } from '../../api/driverApi';
+
+function formatDate(val) {
+  if (!val) return '-';
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return String(val);
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}/${mm}/${d.getFullYear()}`;
+}
 
 function formatSeconds(secs) {
   if (secs == null || secs < 0) return '00:00';
@@ -244,30 +254,30 @@ export default function DriverDashboard({ sessionToken }) {
         animationType="fade"
         onRequestClose={() => setReceiptOrder(null)}
       >
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
-          <View style={{ width: '85%', maxWidth: 380, backgroundColor: '#fff', borderRadius: 8, padding: 20 }}>
-            <Text style={{ fontSize: 17, marginBottom: 12 }}>Delivery Complete ✓</Text>
-            <View style={{ borderTopWidth: 1, borderColor: '#e0e0e0', marginBottom: 12 }} />
-            <Text style={{ marginBottom: 4 }}>Order ID: #{receiptOrder?.order_id}</Text>
-            <Text style={{ marginBottom: 4 }}>Location: {receiptOrder?.delivery_location || '-'}</Text>
-            <Text style={{ marginBottom: 4 }}>Quantity: {receiptOrder?.quantity || '-'} gal</Text>
-            <Text style={{ marginBottom: 4 }}>Price: {receiptOrder?.price || '-'}</Text>
-            <Text style={{ marginBottom: 4 }}>Customer: {receiptOrder?.customer_name || '-'}</Text>
-            <Text style={{ marginBottom: 4 }}>Customer Phone: {receiptOrder?.customer_phone || '-'}</Text>
-            <Text style={{ marginBottom: 16 }}>Supplier: {receiptOrder?.supplier_name || '-'}</Text>
-            <View style={{ borderTopWidth: 1, borderColor: '#e0e0e0', marginBottom: 12 }} />
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Delivery Complete ✓</Text>
+            <View style={styles.divider} />
+            <Text style={styles.receiptRow}><Text style={styles.receiptLabel}>Order: </Text>#{receiptOrder?.order_id}</Text>
+            <Text style={styles.receiptRow}><Text style={styles.receiptLabel}>Location: </Text>{receiptOrder?.delivery_location || '-'}</Text>
+            <Text style={styles.receiptRow}><Text style={styles.receiptLabel}>Quantity: </Text>{receiptOrder?.quantity || '-'} gal</Text>
+            <Text style={styles.receiptRow}><Text style={styles.receiptLabel}>Price: </Text>{receiptOrder?.price || '-'}</Text>
+            <Text style={styles.receiptRow}><Text style={styles.receiptLabel}>Customer: </Text>{receiptOrder?.customer_name || '-'}</Text>
+            <Text style={styles.receiptRow}><Text style={styles.receiptLabel}>Customer Phone: </Text>{receiptOrder?.customer_phone || '-'}</Text>
+            <Text style={styles.receiptRow}><Text style={styles.receiptLabel}>Supplier: </Text>{receiptOrder?.supplier_name || '-'}</Text>
+            <View style={styles.divider} />
             <BasicButton
               title="OK"
               onPress={() => setReceiptOrder(null)}
-              style={{ marginTop: 0 }}
+              style={styles.okButton}
             />
           </View>
         </View>
       </Modal>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         <View style={styles.topTabsRow}>
-          <BasicButton title="Task" onPress={() => setActiveTab('task')} style={styles.tabButton} />
-          <BasicButton title="History" onPress={() => setActiveTab('history')} style={styles.tabButton} />
+          <BasicButton title="Task" selected={activeTab === 'task'} onPress={() => setActiveTab('task')} style={styles.tabButton} />
+          <BasicButton title="History" selected={activeTab === 'history'} onPress={() => setActiveTab('history')} style={styles.tabButton} />
         </View>
 
         {activeTab === 'task' && (
@@ -277,29 +287,34 @@ export default function DriverDashboard({ sessionToken }) {
               <BasicButton title="Refresh" onPress={loadCurrentOrder} style={styles.inlineButton} />
             </View>
 
-            {!sessionToken ? <Text>Session missing. Login again.</Text> : null}
-            {loadingTask ? <Text style={{ marginTop: 20 }}>Loading task...</Text> : null}
-            {taskMessage ? <Text style={{ marginTop: 20 }}>{taskMessage}</Text> : null}
+            {!sessionToken ? <Text style={styles.errorText}>Session missing. Login again.</Text> : null}
+            {loadingTask ? (
+              <View style={styles.loadingRow}>
+                <ActivityIndicator size="small" color={colors.primary} />
+                <Text style={styles.loadingText}>Loading task...</Text>
+              </View>
+            ) : null}
+            {taskMessage ? <Text style={styles.hintText}>{taskMessage}</Text> : null}
 
             {!currentOrder && !loadingTask && !taskMessage ? (
-              <Text style={{ marginTop: 20 }}>No active task. Checking for new assignments automatically.</Text>
+              <Text style={styles.emptyText}>No active task. Checking for new assignments automatically.</Text>
             ) : null}
 
             {currentOrder ? (
               <View>
                 {/* Order info */}
                 <View style={styles.card}>
-                  <Text>Order #{currentOrder.order_id}</Text>
-                  <Text>Status: {currentOrder.status}</Text>
-                  <Text>Location: {currentOrder.delivery_location}</Text>
-                  <Text>Quantity: {currentOrder.quantity}</Text>
-                  <Text>Price: {currentOrder.price}</Text>
+                  <Text style={styles.cardTitle}>Order #{currentOrder.order_id}</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Status: </Text>{currentOrder.status}</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Location: </Text>{currentOrder.delivery_location}</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Qty: </Text>{currentOrder.quantity} gal</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Price: </Text>{currentOrder.price}</Text>
                 </View>
 
                 {/* Customer info */}
                 <View style={styles.card}>
-                  <Text>Customer: {currentOrder.customer_name || '-'}</Text>
-                  <Text>Phone: {currentOrder.customer_phone || '-'}</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Customer: </Text>{currentOrder.customer_name || '-'}</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Phone: </Text>{currentOrder.customer_phone || '-'}</Text>
                 </View>
 
                 {/* Pending assignment phase: timers + accept/reject */}
@@ -353,19 +368,19 @@ export default function DriverDashboard({ sessionToken }) {
             {historyDetails ? (
               <View>
                 <BasicButton
-                  title="← Back to History"
+                  title="← Back"
                   onPress={() => setHistoryDetails(null)}
                   style={styles.backButton}
                 />
                 <View style={styles.card}>
-                  <Text>Order #{historyDetails.order_id || '-'}</Text>
-                  <Text>Status: {historyDetails.status || '-'}</Text>
-                  <Text>Date: {historyDetails.order_date || '-'}</Text>
-                  <Text>Customer: {historyDetails.customer_name || '-'}</Text>
-                  <Text>Supplier: {historyDetails.supplier_name || '-'}</Text>
-                  <Text>Driver: {historyDetails.driver_name || '-'}</Text>
-                  <Text>Quantity: {historyDetails.quantity || '-'}</Text>
-                  <Text>Price: {historyDetails.price || '-'}</Text>
+                  <Text style={styles.cardTitle}>Order #{historyDetails.order_id || '-'}</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Status: </Text>{historyDetails.status || '-'}</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Date: </Text>{formatDate(historyDetails.order_date)}</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Customer: </Text>{historyDetails.customer_name || '-'}</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Supplier: </Text>{historyDetails.supplier_name || '-'}</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Driver: </Text>{historyDetails.driver_name || '-'}</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Qty: </Text>{historyDetails.quantity || '-'} gal</Text>
+                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Price: </Text>{historyDetails.price || '-'}</Text>
                 </View>
               </View>
             ) : (
@@ -376,9 +391,9 @@ export default function DriverDashboard({ sessionToken }) {
                 {historyOrders.length === 0 ? <Text>No past orders.</Text> : null}
                 {historyOrders.map((item) => (
                   <View key={String(item.order_id || item.id)} style={styles.card}>
-                    <Text>Order ID: {item.order_id || item.id}</Text>
-                    <Text>Status: {item.status || '-'}</Text>
-                    <Text>Date: {item.order_date || item.created_at || '-'}</Text>
+                    <Text style={styles.cardTitle}>Order #{item.order_id || item.id}</Text>
+                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Status: </Text>{item.status || '-'}</Text>
+                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Date: </Text>{formatDate(item.order_date || item.created_at)}</Text>
                     <BasicButton title="View Details" onPress={() => handleViewHistoryOrder(item.order_id || item.id)} style={styles.fullButton} />
                   </View>
                 ))}
@@ -394,50 +409,55 @@ export default function DriverDashboard({ sessionToken }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: colors.background,
   },
   scroll: {
     alignSelf: 'stretch',
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 16,
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.xl,
   },
   topTabsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 12,
+    gap: spacing.xs,
+    marginBottom: spacing.sm,
+    paddingTop: spacing.xs,
   },
   tabButton: {
-    width: '49%',
+    flex: 1,
     marginTop: 0,
   },
   section: {
-    marginTop: 8,
+    marginTop: spacing.xs,
   },
   sectionTitle: {
-    marginBottom: 6,
+    fontSize: typography.body,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: spacing.xs,
   },
   card: {
-    borderWidth: 1,
-    borderColor: '#d0d0d0',
-    borderRadius: 4,
-    padding: 8,
-    marginTop: 4,
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    padding: spacing.sm,
+    marginTop: spacing.xs,
+    ...shadow.sm,
   },
   actionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 6,
+    gap: spacing.xs,
+    marginTop: spacing.xs,
   },
   actionButton: {
-    width: '49%',
+    flex: 1,
     marginTop: 0,
   },
   fullButton: {
     alignSelf: 'stretch',
-    marginTop: 6,
+    marginTop: spacing.xs,
   },
   rowBetween: {
     flexDirection: 'row',
@@ -452,6 +472,82 @@ const styles = StyleSheet.create({
   backButton: {
     alignSelf: 'flex-start',
     marginTop: 0,
+    marginBottom: spacing.xs,
+  },
+  errorText: {
+    color: colors.danger,
+    fontSize: typography.label,
+    marginTop: spacing.sm,
+  },
+  hintText: {
+    color: colors.textSecondary,
+    fontSize: typography.label,
+    marginTop: spacing.sm,
+  },
+  emptyText: {
+    color: colors.textSecondary,
+    fontSize: typography.body,
+    marginTop: spacing.lg,
+    textAlign: 'center',
+  },
+  loadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginTop: spacing.lg,
+  },
+  loadingText: {
+    color: colors.textSecondary,
+    fontSize: typography.body,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: colors.overlay,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBox: {
+    width: '88%',
+    maxWidth: 380,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    ...shadow.md,
+  },
+  modalTitle: {
+    fontSize: typography.subtitle,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: spacing.sm,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: colors.border,
+    marginVertical: spacing.sm,
+  },
+  receiptRow: {
+    fontSize: typography.label,
+    color: colors.textPrimary,
     marginBottom: 4,
+  },
+  receiptLabel: {
+    color: colors.textSecondary,
+  },
+  okButton: {
+    marginTop: 0,
+  },
+  cardTitle: {
+    fontSize: typography.body,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: 4,
+  },
+  cardRow: {
+    fontSize: typography.label,
+    color: colors.textSecondary,
+    marginBottom: 2,
+  },
+  cardLabel: {
+    color: colors.textSecondary,
   },
 });

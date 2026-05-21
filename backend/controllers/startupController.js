@@ -677,6 +677,7 @@ const storeOTP = async (req, res) => {
       });
     }
 
+    console.log(`[DEV] OTP for ${phone}: ${otp}`);
     const dbResult = await query('SELECT store_otp($1, $2) AS result', [phone, otp]);
     const response = dbResult.rows[0].result;
 

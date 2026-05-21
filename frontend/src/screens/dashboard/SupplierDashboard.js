@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, Alert, ScrollView, StyleSheet } from 'react-native';
+import { View, Text, TextInput, Alert, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
+import { colors, spacing, radius, typography, shadow } from '../../theme/tokens';
 import BasicButton from '../../components/ui/BasicButton';
 import {
     listAvailableOrders,
@@ -16,6 +17,15 @@ import {
     getAvailableOrderDetail,
     getPastSupplierOrderDetail,
 } from '../../api/supplierApi';
+
+function formatDate(val) {
+    if (!val) return '-';
+    const d = new Date(val);
+    if (isNaN(d.getTime())) return String(val);
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    return `${dd}/${mm}/${d.getFullYear()}`;
+}
 
 export default function SupplierDashboard({ sessionToken }) {
     const [activeTab, setActiveTab] = useState('market'); // market | orders | drivers
@@ -413,7 +423,7 @@ export default function SupplierDashboard({ sessionToken }) {
         if (loadingMarketDetail && !marketOrderDetail) {
             return (
                 <View style={styles.section}>
-                    <BasicButton title="← Back to Market" onPress={() => setMarketOrderDetail(null)} style={styles.backButton} />
+                    <BasicButton title="← Back" onPress={() => setMarketOrderDetail(null)} style={styles.backButton} />
                     <Text>Loading order details...</Text>
                 </View>
             );
@@ -422,7 +432,7 @@ export default function SupplierDashboard({ sessionToken }) {
         if (!marketOrderDetail) {
             return (
                 <View style={styles.section}>
-                    <BasicButton title="← Back to Market" onPress={() => setMarketOrderDetail(null)} style={styles.backButton} />
+                    <BasicButton title="← Back" onPress={() => setMarketOrderDetail(null)} style={styles.backButton} />
                     <Text>Order details unavailable.</Text>
                 </View>
             );
@@ -432,16 +442,16 @@ export default function SupplierDashboard({ sessionToken }) {
         return (
             <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
                 <BasicButton
-                    title="← Back to Market"
+                    title="← Back"
                     onPress={() => setMarketOrderDetail(null)}
                     style={styles.backButton}
                 />
                 <View style={styles.card}>
-                    <Text style={styles.sectionTitle}>Order #{orderId}</Text>
-                    <Text>Location: {marketOrderDetail.delivery_location || '-'}</Text>
-                    <Text>Gallons: {marketOrderDetail.requested_capacity || '-'}</Text>
-                    <Text>Customer Offer: {marketOrderDetail.customer_bid_price || '-'}</Text>
-                    <Text>Customer: {marketOrderDetail.customer_name || '-'}</Text>
+                    <Text style={styles.cardTitle}>Order #{orderId}</Text>
+                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Location: </Text>{marketOrderDetail.delivery_location || '-'}</Text>
+                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Gallons: </Text>{marketOrderDetail.requested_capacity || '-'}</Text>
+                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Offer: </Text>{marketOrderDetail.customer_bid_price || '-'}</Text>
+                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Customer: </Text>{marketOrderDetail.customer_name || '-'}</Text>
                 </View>
                 <View style={styles.card}>
                     <Text style={styles.sectionTitle}>Place Your Bid</Text>
@@ -492,19 +502,20 @@ export default function SupplierDashboard({ sessionToken }) {
         return (
             <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
                 <BasicButton
-                    title="← Back to Orders"
+                    title="← Back"
                     onPress={() => { setSelectedOrderId(null); setOrderDetail(null); setAssignableDrivers([]); }}
                     style={styles.backButton}
                 />
 
                 <View style={styles.card}>
-                    <Text style={styles.sectionTitle}>Order #{orderDetail.order_id || selectedOrderId}</Text>
-                    <Text>Status: {status}</Text>
-                    <Text>Address: {orderDetail.delivery_location || orderDetail.customer_location || '-'}</Text>
-                    <Text>Gallons: {orderDetail.requested_capacity || orderDetail.quantity || '-'}</Text>
-                    <Text>Accepted Price: {orderDetail.accepted_price || orderDetail.price || '-'}</Text>
-                    {orderDetail.customer_name ? <Text>Customer: {orderDetail.customer_name}</Text> : null}
-                    {orderDetail.customer_phone ? <Text>Customer Phone: {orderDetail.customer_phone}</Text> : null}
+                    <Text style={styles.cardTitle}>Order #{orderDetail.order_id || selectedOrderId}</Text>
+                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Status: </Text>{status}</Text>
+                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Date: </Text>{formatDate(orderDetail.order_date || orderDetail.created_at)}</Text>
+                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Address: </Text>{orderDetail.delivery_location || orderDetail.customer_location || '-'}</Text>
+                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Gallons: </Text>{orderDetail.requested_capacity || orderDetail.quantity || '-'}</Text>
+                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Price: </Text>{orderDetail.accepted_price || orderDetail.price || '-'}</Text>
+                    {orderDetail.customer_name ? <Text style={styles.cardRow}><Text style={styles.cardLabel}>Customer: </Text>{orderDetail.customer_name}</Text> : null}
+                    {orderDetail.customer_phone ? <Text style={styles.cardRow}><Text style={styles.cardLabel}>Phone: </Text>{orderDetail.customer_phone}</Text> : null}
                 </View>
 
                 {/* Supplier timer banner + driver assignment */}
@@ -530,8 +541,8 @@ export default function SupplierDashboard({ sessionToken }) {
                             const driverPhone = driver.driver_phone_num || driver.phone || '-';
                             return (
                                 <View key={String(driverId)} style={styles.driverAssignCard}>
-                                    <Text>Name: {driverName}</Text>
-                                    <Text>Phone: {driverPhone}</Text>
+                                    <Text style={styles.cardTitle}>{driverName}</Text>
+                                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Phone: </Text>{driverPhone}</Text>
                                     <BasicButton
                                         title="Assign This Driver"
                                         onPress={() => handleAssignDriver(driverId)}
@@ -575,9 +586,9 @@ export default function SupplierDashboard({ sessionToken }) {
         <View style={styles.container}>
             {!showingOrderDetail && !showingMarketDetail && (
                 <View style={styles.topTabsRow}>
-                    <BasicButton title="Live Market" onPress={() => setActiveTab('market')} style={styles.tabButton} />
-                    <BasicButton title="Orders" onPress={() => setActiveTab('orders')} style={styles.tabButton} />
-                    <BasicButton title="Drivers" onPress={() => setActiveTab('drivers')} style={styles.tabButton} />
+                    <BasicButton title="Live Market" selected={activeTab === 'market'} onPress={() => setActiveTab('market')} style={styles.tabButton} />
+                    <BasicButton title="Orders" selected={activeTab === 'orders'} onPress={() => setActiveTab('orders')} style={styles.tabButton} />
+                    <BasicButton title="Drivers" selected={activeTab === 'drivers'} onPress={() => setActiveTab('drivers')} style={styles.tabButton} />
                 </View>
             )}
 
@@ -598,9 +609,9 @@ export default function SupplierDashboard({ sessionToken }) {
                             const area = extractArea(item.delivery_location);
                             return (
                                 <View key={orderKey(item)} style={styles.card}>
-                                    <Text>Order #{orderId}</Text>
-                                    <Text>Area: {area}</Text>
-                                    <Text>Gallons: {item.requested_capacity} | Customer Offer: {item.customer_bid_price}</Text>
+                                    <Text style={styles.cardTitle}>Order #{orderId}</Text>
+                                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Area: </Text>{area}</Text>
+                                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Gallons: </Text>{item.requested_capacity}<Text style={styles.cardLabel}>  Offer: </Text>{item.customer_bid_price}</Text>
                                     <View style={styles.bidRow}>
                                         <TextInput
                                             placeholder="Bid price"
@@ -646,8 +657,10 @@ export default function SupplierDashboard({ sessionToken }) {
                                     const orderId = item.order_id || item.id;
                                     return (
                                         <View key={orderKey(item)} style={styles.activeOrderCard}>
-                                            <Text>Order #{orderId}</Text>
-                                            <Text>Status: {item.status}</Text>
+                                            <Text style={styles.cardTitle}>Order #{orderId}</Text>
+                                            <Text style={styles.cardRow}>{item.status}</Text>
+                                            <Text style={styles.cardRow}><Text style={styles.cardLabel}>Qty: </Text>{item.requested_capacity || item.quantity || '-'}</Text>
+                                            <Text style={styles.cardRow}><Text style={styles.cardLabel}>Date: </Text>{formatDate(item.order_date || item.created_at)}</Text>
                                             {item.status === 'supplier_timer' ? (
                                                 <Text style={styles.timerBadge}>⏱ Assign driver!</Text>
                                             ) : null}
@@ -658,7 +671,7 @@ export default function SupplierDashboard({ sessionToken }) {
                                                     setOrdersTab('active');
                                                     handleSelectOrder(orderId);
                                                 }}
-                                                style={{ marginTop: 4 }}
+                                                style={styles.fullButton}
                                             />
                                         </View>
                                     );
@@ -672,8 +685,8 @@ export default function SupplierDashboard({ sessionToken }) {
                     {activeTab === 'orders' && (
                         <View style={styles.section}>
                             <View style={styles.subTabsRow}>
-                                <BasicButton title="Active" onPress={() => setOrdersTab('active')} style={styles.subTabButton} />
-                                <BasicButton title="Past" onPress={() => setOrdersTab('past')} style={styles.subTabButton} />
+                                <BasicButton title="Active" selected={ordersTab === 'active'} onPress={() => setOrdersTab('active')} style={styles.subTabButton} />
+                                <BasicButton title="Past" selected={ordersTab === 'past'} onPress={() => setOrdersTab('past')} style={styles.subTabButton} />
                             </View>
 
                             {loadingOrders ? <Text>Loading orders...</Text> : null}
@@ -685,8 +698,11 @@ export default function SupplierDashboard({ sessionToken }) {
                                         const orderId = item.order_id || item.id;
                                         return (
                                             <View key={orderKey(item)} style={styles.card}>
-                                                <Text>Order #{orderId}</Text>
-                                                <Text>Status: {item.status}</Text>
+                                                <Text style={styles.cardTitle}>Order #{orderId}</Text>
+                                                <Text style={styles.cardRow}><Text style={styles.cardLabel}>Status: </Text>{item.status}</Text>
+                                                <Text style={styles.cardRow}><Text style={styles.cardLabel}>Location: </Text>{item.delivery_location ? extractArea(item.delivery_location) : '-'}</Text>
+                                                <Text style={styles.cardRow}><Text style={styles.cardLabel}>Qty: </Text>{item.requested_capacity || item.quantity || '-'} gal</Text>
+                                                <Text style={styles.cardRow}><Text style={styles.cardLabel}>Date: </Text>{formatDate(item.order_date || item.created_at)}</Text>
                                                 {item.status === 'supplier_timer' ? (
                                                     <Text style={styles.timerBadge}>⏱ Assign a driver now</Text>
                                                 ) : null}
@@ -706,19 +722,19 @@ export default function SupplierDashboard({ sessionToken }) {
                                     {pastOrderDetail ? (
                                         <View>
                                             <BasicButton
-                                                title="← Back to Past Orders"
+                                                title="← Back"
                                                 onPress={() => setPastOrderDetail(null)}
                                                 style={styles.backButton}
                                             />
                                             <View style={styles.card}>
-                                                <Text>Order #{pastOrderDetail.order_id || '-'}</Text>
-                                                <Text>Status: {pastOrderDetail.status || '-'}</Text>
-                                                <Text>Date: {pastOrderDetail.order_date || '-'}</Text>
-                                                <Text>Customer: {pastOrderDetail.customer_name || '-'}</Text>
-                                                <Text>Customer Phone: {pastOrderDetail.customer_phone || '-'}</Text>
-                                                <Text>Driver: {pastOrderDetail.driver_name || '-'}</Text>
-                                                <Text>Quantity: {pastOrderDetail.quantity || '-'}</Text>
-                                                <Text>Price: {pastOrderDetail.price || '-'}</Text>
+                                                <Text style={styles.cardTitle}>Order #{pastOrderDetail.order_id || '-'}</Text>
+                                                <Text style={styles.cardRow}><Text style={styles.cardLabel}>Status: </Text>{pastOrderDetail.status || '-'}</Text>
+                                                <Text style={styles.cardRow}><Text style={styles.cardLabel}>Date: </Text>{formatDate(pastOrderDetail.order_date)}</Text>
+                                                <Text style={styles.cardRow}><Text style={styles.cardLabel}>Customer: </Text>{pastOrderDetail.customer_name || '-'}</Text>
+                                                <Text style={styles.cardRow}><Text style={styles.cardLabel}>Phone: </Text>{pastOrderDetail.customer_phone || '-'}</Text>
+                                                <Text style={styles.cardRow}><Text style={styles.cardLabel}>Driver: </Text>{pastOrderDetail.driver_name || '-'}</Text>
+                                                <Text style={styles.cardRow}><Text style={styles.cardLabel}>Quantity: </Text>{pastOrderDetail.quantity || '-'} gal</Text>
+                                                <Text style={styles.cardRow}><Text style={styles.cardLabel}>Price: </Text>{pastOrderDetail.price || '-'}</Text>
                                             </View>
                                         </View>
                                     ) : (
@@ -726,8 +742,11 @@ export default function SupplierDashboard({ sessionToken }) {
                                             {pastOrders.length === 0 ? <Text>No past orders</Text> : null}
                                             {pastOrders.map((item) => (
                                                 <View key={orderKey(item)} style={styles.card}>
-                                                    <Text>Order #{item.order_id || item.id}</Text>
-                                                    <Text>Status: {item.status || 'Completed'}</Text>
+                                                    <Text style={styles.cardTitle}>Order #{item.order_id || item.id}</Text>
+                                                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Status: </Text>{item.status || 'Completed'}</Text>
+                                                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Location: </Text>{item.delivery_location ? extractArea(item.delivery_location) : '-'}</Text>
+                                                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Qty: </Text>{item.requested_capacity || item.quantity || '-'} gal</Text>
+                                                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Date: </Text>{formatDate(item.order_date || item.created_at)}</Text>
                                                     <BasicButton
                                                         title="View Details"
                                                         onPress={() => fetchPastOrderDetail(item.order_id || item.id)}
@@ -747,7 +766,7 @@ export default function SupplierDashboard({ sessionToken }) {
                             <Text style={styles.sectionTitle}>Manage Drivers</Text>
                             {loadingDrivers ? <Text>Loading drivers...</Text> : null}
                             <View style={styles.card}>
-                                <Text>Add Driver</Text>
+                                <Text style={styles.sectionTitle}>Add Driver</Text>
                                 <TextInput
                                     placeholder="Driver Phone Number"
                                     value={newDriverPhone}
@@ -759,11 +778,11 @@ export default function SupplierDashboard({ sessionToken }) {
                             </View>
                             {drivers.map((item) => (
                                 <View key={String(item.driver_phone_num || item.driver_user_id || item.id)} style={styles.card}>
-                                    <Text>Driver: {item.driver_name || item.name || '-'}</Text>
-                                    <Text>Phone: {item.driver_phone_num || item.linked_phone || '-'}</Text>
-                                    <Text>Linked: {item.linked ? 'Yes' : 'No'}</Text>
-                                    <Text>Status: {item.available ? 'available' : 'unavailable'}</Text>
-                                    <BasicButton title="Remove Driver" onPress={() => handleRemoveDriver(item.driver_phone_num)} style={styles.fullButton} />
+                                    <Text style={styles.cardTitle}>{item.driver_name || item.name || '-'}</Text>
+                                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Phone: </Text>{item.driver_phone_num || item.linked_phone || '-'}</Text>
+                                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Linked: </Text>{item.linked ? 'Yes' : 'No'}</Text>
+                                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Status: </Text>{item.available ? 'Available' : 'Unavailable'}</Text>
+                                    <BasicButton title="Remove Driver" onPress={() => handleRemoveDriver(item.driver_phone_num)} style={[styles.fullButton, { backgroundColor: colors.danger }]} />
                                 </View>
                             ))}
                         </View>
@@ -777,116 +796,144 @@ export default function SupplierDashboard({ sessionToken }) {
 const styles = StyleSheet.create({
     marketTabContainer: {
         flex: 1,
-        width: '90%',
-        maxWidth: 420,
-        alignSelf: 'center',
+        width: '100%',
+        paddingHorizontal: spacing.md,
     },
     activeOrdersBar: {
         borderTopWidth: 1,
-        borderTopColor: '#d0d0d0',
-        paddingTop: 8,
-        paddingBottom: 8,
+        borderTopColor: colors.border,
+        paddingTop: spacing.sm,
+        paddingBottom: spacing.sm,
     },
     activeOrderCard: {
-        width: 155,
-        borderWidth: 1,
-        borderColor: '#d0d0d0',
-        borderRadius: 4,
-        padding: 8,
-        marginRight: 8,
+        width: 160,
+        backgroundColor: colors.surface,
+        borderRadius: radius.md,
+        padding: spacing.sm,
+        marginRight: spacing.sm,
+        ...shadow.sm,
     },
     bidRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        marginTop: 8,
+        marginTop: spacing.sm,
+        gap: spacing.xs,
     },
     bidInput: {
         flex: 1,
         height: 44,
-        borderWidth: 1,
-        borderColor: '#000',
-        borderRadius: 4,
-        paddingHorizontal: 8,
-        marginRight: 6,
-        fontSize: 14,
+        borderWidth: 1.5,
+        borderColor: colors.border,
+        borderRadius: radius.sm,
+        paddingHorizontal: spacing.sm,
+        fontSize: typography.label,
+        color: colors.textPrimary,
+        backgroundColor: colors.surface,
     },
     bidButton: {
-        width: 72,
+        width: 64,
         height: 44,
         marginTop: 0,
         paddingVertical: 0,
         paddingHorizontal: 4,
-        marginRight: 6,
     },
     viewButton: {
-        width: 72,
+        width: 64,
         height: 44,
         marginTop: 0,
         paddingVertical: 0,
         paddingHorizontal: 4,
+        backgroundColor: colors.primaryLight,
     },
     bidButtonText: {
-        fontSize: 13,
+        fontSize: typography.small,
+        color: colors.textOnPrimary,
     },
     container: {
         flex: 1,
+        backgroundColor: colors.background,
         alignItems: 'center',
-        justifyContent: 'center',
     },
     scroll: {
-        width: '90%',
-        maxWidth: 420,
+        width: '100%',
+        paddingHorizontal: spacing.md,
     },
     scrollContent: {
-        paddingBottom: 16,
+        paddingBottom: spacing.xl,
     },
     topTabsRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
-        marginBottom: 12,
+        gap: spacing.xs,
+        marginBottom: spacing.sm,
+        paddingTop: spacing.xs,
+        width: '100%',
+        paddingHorizontal: spacing.md,
     },
     tabButton: {
-        width: '32%',
+        flex: 1,
         marginTop: 0,
     },
     subTabsRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
-        marginBottom: 8,
+        gap: spacing.xs,
+        marginBottom: spacing.sm,
     },
     subTabButton: {
-        width: '49%',
+        flex: 1,
         marginTop: 0,
     },
     section: {
-        marginTop: 8,
+        marginTop: spacing.xs,
     },
     sectionTitle: {
-        marginBottom: 6,
+        fontSize: typography.body,
+        fontWeight: '700',
+        color: colors.textPrimary,
+        marginBottom: spacing.xs,
     },
     card: {
-        borderWidth: 1,
-        borderColor: '#d0d0d0',
-        borderRadius: 4,
-        padding: 10,
-        marginTop: 8,
+        backgroundColor: colors.surface,
+        borderRadius: radius.md,
+        padding: spacing.sm,
+        marginTop: spacing.sm,
+        ...shadow.sm,
+    },
+    cardTitle: {
+        fontSize: typography.body,
+        fontWeight: '700',
+        color: colors.textPrimary,
+        marginBottom: 4,
+    },
+    cardRow: {
+        fontSize: typography.label,
+        color: colors.textSecondary,
+        marginBottom: 2,
+    },
+    cardLabel: {
+        color: colors.textSecondary,
     },
     input: {
-        borderWidth: 1,
-        borderColor: '#000',
-        paddingHorizontal: 8,
-        paddingVertical: 6,
-        marginTop: 8,
+        borderWidth: 1.5,
+        borderColor: colors.border,
+        borderRadius: radius.sm,
+        paddingHorizontal: spacing.sm,
+        paddingVertical: 10,
+        marginTop: spacing.sm,
+        fontSize: typography.body,
+        color: colors.textPrimary,
+        backgroundColor: colors.surface,
     },
     inputButtonRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        marginTop: 8,
+        marginTop: spacing.sm,
+        gap: spacing.xs,
     },
     rowInput: {
         flex: 1,
         marginTop: 0,
-        marginRight: 8,
     },
     rowButton: {
         marginTop: 0,
@@ -894,57 +941,70 @@ const styles = StyleSheet.create({
     },
     fullButton: {
         alignSelf: 'stretch',
+        marginTop: spacing.xs,
     },
     backButton: {
         alignSelf: 'flex-start',
-        marginBottom: 8,
+        marginBottom: spacing.sm,
+        marginTop: 0,
     },
     cancelButton: {
         alignSelf: 'stretch',
-        marginTop: 16,
+        marginTop: spacing.md,
+        backgroundColor: colors.danger,
     },
     timerCard: {
+        backgroundColor: '#FFF8E1',
         borderWidth: 2,
-        borderColor: '#e67e00',
-        borderRadius: 6,
-        padding: 12,
-        marginTop: 12,
+        borderColor: colors.warning,
+        borderRadius: radius.md,
+        padding: spacing.md,
+        marginTop: spacing.sm,
     },
     timerTitle: {
-        fontSize: 16,
-        fontWeight: 'bold',
+        fontSize: typography.body,
+        fontWeight: '700',
+        color: colors.warning,
         marginBottom: 4,
     },
     timerLabel: {
         marginTop: 4,
+        fontSize: typography.label,
+        color: colors.textSecondary,
     },
     timerValue: {
-        fontSize: 28,
-        fontWeight: 'bold',
-        letterSpacing: 2,
+        fontSize: 32,
+        fontWeight: '800',
+        letterSpacing: 3,
         marginTop: 2,
+        color: colors.textPrimary,
     },
     timerUrgent: {
-        color: '#cc0000',
+        color: colors.danger,
     },
     timerExpiredText: {
-        color: '#cc0000',
+        color: colors.danger,
+        fontSize: typography.label,
         marginTop: 4,
     },
     timerBadge: {
-        color: '#e67e00',
-        fontWeight: 'bold',
+        color: colors.warning,
+        fontWeight: '700',
+        fontSize: typography.small,
         marginTop: 4,
     },
     driverAssignCard: {
+        backgroundColor: colors.background,
+        borderRadius: radius.sm,
+        padding: spacing.sm,
+        marginTop: spacing.sm,
         borderWidth: 1,
-        borderColor: '#aaa',
-        borderRadius: 4,
-        padding: 8,
-        marginTop: 8,
+        borderColor: colors.border,
     },
     emptyText: {
-        color: '#666',
-        marginTop: 4,
+        color: colors.textSecondary,
+        fontSize: typography.body,
+        marginTop: spacing.sm,
+        textAlign: 'center',
     },
 });
