@@ -1,7 +1,9 @@
+const http = require('http');
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { closePool } = require('./config/database');
+const { init: initSocket } = require('./socket');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -38,7 +40,10 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(port, () => {
+const server = http.createServer(app);
+initSocket(server);
+
+server.listen(port, () => {
   console.log('Server listening on port ' + port);
 });
 

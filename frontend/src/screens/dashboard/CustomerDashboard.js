@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, Alert, ScrollView, Modal, ActivityIndicator, StyleSheet } from 'react-native';
 import { colors, spacing, radius, typography, shadow } from '../../theme/tokens';
 import { Picker } from '@react-native-picker/picker';
+import Toast from '../../components/ui/Toast';
+
 import {
   getCustomerQuantityPricing,
   startCustomerOrder,
@@ -61,7 +63,7 @@ function formatDate(val) {
   return `${dd}/${mm}/${d.getFullYear()}`;
 }
 
-export default function CustomerDashboard({ sessionToken }) {
+export default function CustomerDashboard({ sessionToken, socket }) {
   const [activeOrder, setActiveOrder] = useState(null);
   const [bids, setBids] = useState([]);
   const [bidUpdatePrice, setBidUpdatePrice] = useState('');
@@ -69,25 +71,29 @@ export default function CustomerDashboard({ sessionToken }) {
   const [loadingPricing, setLoadingPricing] = useState(true);
   const [loadingBids, setLoadingBids] = useState(false);
   const [loadingCurrentOrder, setLoadingCurrentOrder] = useState(true);
+  const [timerTick, setTimerTick] = useState(0);
 
   const [address, setAddress] = useState('');
   const [district, setDistrict] = useState(KARACHI_AREAS[0]);
   const [gallons, setGallons] = useState('1000');
   const [price, setPrice] = useState('');
+  const [cancelledModalData, setCancelledModalData] = useState(null);
 
-  const [activeTab, setActiveTab] = useState('order'); // order | history
+  const [activeTab, setActiveTab] = useState('order');
   const [historyOrders, setHistoryOrders] = useState([]);
   const [historyDetail, setHistoryDetail] = useState(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [selectedRating, setSelectedRating] = useState(null);
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
 
-  // Rating prompt modal (shown automatically when a completed unrated order is detected)
   const [ratingPromptOrder, setRatingPromptOrder] = useState(null);
   const [promptRating, setPromptRating] = useState(null);
   const [promptSubmitting, setPromptSubmitting] = useState(false);
-  // Session-only dismissed set — cleared when app closes/restarts
+
   const dismissedRatingIds = useRef(new Set());
+  // Records the wall-clock time when bids were last fetched from the server
+  const bidsFetchedAtRef = useRef(Date.now());
+  const orderFetchedAtRef = useRef(Date.now());
 
   const formatDuration = (secondsRaw) => {
     const totalSeconds = Math.max(0, Number(secondsRaw || 0));
@@ -99,19 +105,44 @@ export default function CustomerDashboard({ sessionToken }) {
   const getRemainingSupplierSeconds = (order) => {
     const directRemaining = Number(order?.remaining_supplier_seconds);
     if (Number.isFinite(directRemaining) && directRemaining >= 0) {
-      return Math.floor(directRemaining);
+      const elapsedSinceFetch = (Date.now() - orderFetchedAtRef.current) / 1000;
+      return Math.max(0, Math.floor(directRemaining - elapsedSinceFetch));
     }
-
-    if (!order?.time_limit_for_supplier) {
-      return 0;
-    }
-
+    if (!order?.time_limit_for_supplier) return 0;
     const timeLimit = new Date(order.time_limit_for_supplier).getTime();
-    if (Number.isNaN(timeLimit)) {
-      return 0;
+    if (Number.isNaN(timeLimit)) return 0;
+    return Math.max(0, Math.ceil((timeLimit - Date.now()) / 1000));
+  };
+
+  // Calculates remaining seconds for a bid, accounting for time elapsed since fetch.
+  // timerTick is passed in so React re-evaluates this on every tick.
+  const getRemainingSeconds = (bid, _tick = 0) => {
+    const now = Date.now();
+
+    // If server gave us remaining_seconds, subtract elapsed time since we fetched
+    const directRemaining = Number(bid?.remaining_seconds);
+    if (Number.isFinite(directRemaining) && directRemaining >= 0) {
+      const elapsedSinceFetch = (now - bidsFetchedAtRef.current) / 1000;
+      return Math.max(0, Math.floor(directRemaining - elapsedSinceFetch));
     }
 
-    return Math.max(0, Math.ceil((timeLimit - Date.now()) / 1000));
+    // Fallback: calculate from expires_at timestamp
+    if (bid?.expires_at) {
+      const expiresAt = new Date(bid.expires_at).getTime();
+      if (!Number.isNaN(expiresAt)) {
+        return Math.max(0, Math.ceil((expiresAt - now) / 1000));
+      }
+    }
+
+    // Fallback: calculate from created_at + window
+    if (bid?.created_at) {
+      const createdAt = new Date(bid.created_at).getTime();
+      if (!Number.isNaN(createdAt)) {
+        return Math.max(0, Math.ceil((createdAt + BID_WINDOW_SECONDS * 1000 - now) / 1000));
+      }
+    }
+
+    return 0;
   };
 
   const normalizeOrder = (details, fallback = {}) => ({
@@ -146,6 +177,8 @@ export default function CustomerDashboard({ sessionToken }) {
       const response = await getCurrentCustomerOrder(sessionToken);
       const normalized = normalizeOrder(response?.data || {});
       setActiveOrder(normalized);
+      setActiveOrder(normalized);
+      orderFetchedAtRef.current = Date.now();
 
       if (normalized.status === 'open') {
         setBidUpdatePrice(normalized.price || '');
@@ -159,32 +192,23 @@ export default function CustomerDashboard({ sessionToken }) {
         setBidUpdatePrice('');
         return;
       }
-
       console.log('Current order fetch failed:', error.message);
     }
   }, [sessionToken]);
 
   useEffect(() => {
     let mounted = true;
-
     const bootstrapCurrentOrder = async () => {
       if (!sessionToken) {
         setLoadingCurrentOrder(false);
         return;
       }
-
       setLoadingCurrentOrder(true);
       await loadCurrentOrder();
-      if (mounted) {
-        setLoadingCurrentOrder(false);
-      }
+      if (mounted) setLoadingCurrentOrder(false);
     };
-
     bootstrapCurrentOrder();
-
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, [sessionToken, loadCurrentOrder]);
 
   useEffect(() => {
@@ -193,10 +217,8 @@ export default function CustomerDashboard({ sessionToken }) {
         setLoadingPricing(false);
         return;
       }
-
       try {
         const response = await getCustomerQuantityPricing(sessionToken);
-
         const quantities = response?.data?.quantities;
         if (Array.isArray(quantities) && quantities.length > 0) {
           const normalized = quantities.map((item) => ({
@@ -215,57 +237,27 @@ export default function CustomerDashboard({ sessionToken }) {
         setLoadingPricing(false);
       }
     };
-
     fetchPricing();
   }, [sessionToken]);
 
   const selectedOption = quantityPricing.find((opt) => String(opt.quantity_in_gallon) === gallons);
-
   const minPrice = selectedOption ? selectedOption.base_price * 0.85 : null;
   const maxPrice = selectedOption ? selectedOption.base_price * 3.0 : null;
 
   const handleGallonsChange = (value) => {
     setGallons(value);
     const option = quantityPricing.find((opt) => String(opt.quantity_in_gallon) === value);
-    if (option) {
-      setPrice(String(option.base_price));
-    }
-  };
-
-  const getRemainingSeconds = (bid) => {
-    const directRemaining = Number(bid?.remaining_seconds);
-    if (Number.isFinite(directRemaining) && directRemaining >= 0) {
-      return Math.floor(directRemaining);
-    }
-
-    const now = Date.now();
-    if (bid?.expires_at) {
-      const expiresAt = new Date(bid.expires_at).getTime();
-      if (!Number.isNaN(expiresAt)) {
-        return Math.max(0, Math.ceil((expiresAt - now) / 1000));
-      }
-    }
-
-    if (bid?.created_at) {
-      const createdAt = new Date(bid.created_at).getTime();
-      if (!Number.isNaN(createdAt)) {
-        const expiresAt = createdAt + BID_WINDOW_SECONDS * 1000;
-        return Math.max(0, Math.ceil((expiresAt - now) / 1000));
-      }
-    }
-
-    return 0;
+    if (option) setPrice(String(option.base_price));
   };
 
   const fetchBids = async (orderIdValue) => {
-    if (!sessionToken) return;
-    if (!orderIdValue) return;
-
+    if (!sessionToken || !orderIdValue) return;
     try {
       setLoadingBids(true);
       const response = await listCustomerOrderBids(sessionToken, Number(orderIdValue));
       const incomingBids = Array.isArray(response?.data?.bids) ? response.data.bids : [];
-      setBids(incomingBids.filter((item) => getRemainingSeconds(item) > 0));
+      bidsFetchedAtRef.current = Date.now(); // record fetch time so getRemainingSeconds can subtract elapsed
+      setBids(incomingBids);                 // store all bids unfiltered; visibleBids filters on each render
     } catch (_error) {
       setBids([]);
     } finally {
@@ -273,73 +265,54 @@ export default function CustomerDashboard({ sessionToken }) {
     }
   };
 
+  // Starts the per-second tick that drives countdown re-renders, fetches bids, and listens for new ones
   useEffect(() => {
     if (!sessionToken) return;
     if (!activeOrder?.id) return;
-    if (activeOrder.status !== 'open') return;
+    if (activeOrder.status !== 'open' && activeOrder.status !== 'supplier_timer') return;
 
-    fetchBids(activeOrder.id);
-
-    const interval = setInterval(() => {
-      setBids((prev) => prev.filter((item) => getRemainingSeconds(item) > 0));
+    if (activeOrder.status === 'open') {
       fetchBids(activeOrder.id);
+    }
+
+    const tickInterval = setInterval(() => {
+      setTimerTick((t) => t + 1);
     }, 1000);
 
-    return () => clearInterval(interval);
-  }, [sessionToken, activeOrder?.id, activeOrder?.status]);
+    if (socket) {
+      const onBidPosted = () => {
+        if (activeOrder.status === 'open') fetchBids(activeOrder.id);
+      };
+      socket.on('bid_posted', onBidPosted);
+      return () => {
+        clearInterval(tickInterval);
+        socket.off('bid_posted', onBidPosted);
+      };
+    }
+
+    return () => clearInterval(tickInterval);
+  }, [sessionToken, activeOrder?.id, activeOrder?.status, socket]);
 
   useEffect(() => {
     if (!sessionToken) return;
     if (!activeOrder?.id) return;
     if (!CUSTOMER_TRACKED_STATUSES.includes(activeOrder.status)) return;
-
-    const intervalId = setInterval(() => {
-      loadCurrentOrder();
-    }, 1000);
-
-    return () => clearInterval(intervalId);
-  }, [sessionToken, activeOrder?.id, activeOrder?.status, loadCurrentOrder]);
+    if (!socket) return;
+    socket.on('order_updated', loadCurrentOrder);
+    return () => socket.off('order_updated', loadCurrentOrder);
+  }, [sessionToken, activeOrder?.id, activeOrder?.status, loadCurrentOrder, socket]);
 
   const handleStartOrder = async () => {
-    if (!sessionToken) {
-      Alert.alert('Error', 'Missing session token. Please login again.');
-      return;
-    }
-
-    if (!address.trim()) {
-      Alert.alert('Error', 'Address is required');
-      return;
-    }
-    if (!district) {
-      Alert.alert('Error', 'Please select a district');
-      return;
-    }
-    if (!gallons) {
-      Alert.alert('Error', 'Please select gallons from allowed values');
-      return;
-    }
-    if (!price || Number.isNaN(Number(price))) {
-      Alert.alert('Error', 'Please enter a valid price');
-      return;
-    }
+    if (!sessionToken) { Alert.alert('Error', 'Missing session token. Please login again.'); return; }
+    if (!address.trim()) { Alert.alert('Error', 'Address is required'); return; }
+    if (!district) { Alert.alert('Error', 'Please select a district'); return; }
+    if (!gallons) { Alert.alert('Error', 'Please select gallons from allowed values'); return; }
+    if (!price || Number.isNaN(Number(price))) { Alert.alert('Error', 'Please enter a valid price'); return; }
 
     if (selectedOption && minPrice !== null && maxPrice !== null) {
       const numericPrice = Number(price);
-      if (numericPrice < minPrice || numericPrice > maxPrice) {
-        if (numericPrice < minPrice) {
-          Alert.alert(
-            'Error',
-            `Price cannot be lower than ${minPrice}`
-          );
-        }
-        else if (numericPrice > maxPrice) {
-          Alert.alert(
-            'Error',
-            `Price cannot be higher than ${maxPrice}`
-          );
-        }
-        return;
-      }
+      if (numericPrice < minPrice) { Alert.alert('Error', `Price cannot be lower than ${minPrice}`); return; }
+      if (numericPrice > maxPrice) { Alert.alert('Error', `Price cannot be higher than ${maxPrice}`); return; }
     }
 
     try {
@@ -350,80 +323,58 @@ export default function CustomerDashboard({ sessionToken }) {
       });
       await loadCurrentOrder();
     } catch (error) {
-      if (error.status === 409 && error?.payload?.data?.active_order_id) {
-        await loadCurrentOrder();
-        return;
-      }
-
+      if (error.status === 409 && error?.payload?.data?.active_order_id) { await loadCurrentOrder(); return; }
       Alert.alert('Error', error.message || 'Failed to start order');
     }
   };
 
   const handleCancelOrder = async () => {
-    if (!sessionToken) {
-      Alert.alert('Error', 'Missing session token. Please login again.');
-      return;
-    }
+  if (!sessionToken) { Alert.alert('Error', 'Missing session token. Please login again.'); return; }
+  const orderId = Number(activeOrder?.id);
+  if (!Number.isInteger(orderId) || orderId <= 0) { Alert.alert('Error', 'Invalid order ID.'); return; }
+  if (!CUSTOMER_CANCELABLE_STATUSES.includes(activeOrder?.status)) {
+    Alert.alert('Not Allowed', `Order cannot be cancelled in state: ${activeOrder?.status}`);
+    return;
+  }
 
-    const orderId = Number(activeOrder?.id);
-    if (!Number.isInteger(orderId) || orderId <= 0) {
-      Alert.alert('Error', 'Invalid order ID.');
-      return;
-    }
-
-    if (!CUSTOMER_CANCELABLE_STATUSES.includes(activeOrder?.status)) {
-      Alert.alert('Not Allowed', `Order cannot be cancelled in state: ${activeOrder?.status}`);
-      return;
-    }
-
-    try {
-      await cancelCustomerOrder(sessionToken, orderId);
-      setActiveOrder(null);
-      setBids([]);
-      setBidUpdatePrice('');
-      Alert.alert('Success', 'Order cancelled successfully');
-    } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to cancel order');
-    }
-  };
+  Alert.alert(
+    'Cancel Order',
+    'Are you sure you want to cancel this order?',
+    [
+      { text: 'No', style: 'cancel' },
+      {
+        text: 'Yes, Cancel',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await cancelCustomerOrder(sessionToken, orderId);
+            setActiveOrder(null);
+            setBids([]);
+            setBidUpdatePrice('');
+            Alert.alert('Success', 'Order cancelled successfully');
+          } catch (error) {
+            Alert.alert('Error', error.message || 'Failed to cancel order');
+          }
+        }
+      }
+    ]
+  );
+};
 
   const handleUpdateBid = async () => {
-    if (!sessionToken) {
-      Alert.alert('Error', 'Missing session token. Please login again.');
-      return;
-    }
-
+    if (!sessionToken) { Alert.alert('Error', 'Missing session token. Please login again.'); return; }
     const orderId = Number(activeOrder?.id);
     const newBid = Number(bidUpdatePrice);
     const currentBid = Number(activeOrder?.price);
-
-    if (!Number.isInteger(orderId) || orderId <= 0) {
-      Alert.alert('Error', 'Invalid order ID.');
-      return;
-    }
-
-    if (!Number.isFinite(newBid) || newBid <= 0) {
-      Alert.alert('Error', 'Enter a valid customer bid price');
-      return;
-    }
-
+    if (!Number.isInteger(orderId) || orderId <= 0) { Alert.alert('Error', 'Invalid order ID.'); return; }
+    if (!Number.isFinite(newBid) || newBid <= 0) { Alert.alert('Error', 'Enter a valid customer bid price'); return; }
     const increment = newBid - currentBid;
-    if (increment < 50) {
-      Alert.alert('Error', 'Bid update must increase by at least 50');
-      return;
-    }
-    if (increment % 50 !== 0) {
-      Alert.alert('Error', 'Bid update must be in increments of 50');
-      return;
-    }
-
+    if (increment < 50) { Alert.alert('Error', 'Bid update must increase by at least 50'); return; }
+    if (increment % 50 !== 0) { Alert.alert('Error', 'Bid update must be in increments of 50'); return; }
     try {
       const response = await updateCustomerOrderBid(sessionToken, orderId, newBid);
       const updatedPrice = response?.data?.customer_bid_price;
-      setActiveOrder((prev) => ({
-        ...prev,
-        price: String(updatedPrice || newBid)
-      }));
+      setActiveOrder((prev) => ({ ...prev, price: String(updatedPrice || newBid) }));
       setBidUpdatePrice(String(updatedPrice || newBid));
       setBids([]);
       Alert.alert('Success', 'Order bid updated successfully');
@@ -433,16 +384,8 @@ export default function CustomerDashboard({ sessionToken }) {
   };
 
   const handleAcceptBid = async (bidId, remainingSeconds) => {
-    if (!sessionToken) {
-      Alert.alert('Error', 'Missing session token. Please login again.');
-      return;
-    }
-
-    if (remainingSeconds <= 0) {
-      Alert.alert('Expired', 'This bid has expired');
-      return;
-    }
-
+    if (!sessionToken) { Alert.alert('Error', 'Missing session token. Please login again.'); return; }
+    if (remainingSeconds <= 0) { Alert.alert('Expired', 'This bid has expired'); return; }
     const orderId = Number(activeOrder?.id);
     try {
       await acceptCustomerBid(sessionToken, orderId, Number(bidId));
@@ -455,11 +398,7 @@ export default function CustomerDashboard({ sessionToken }) {
   };
 
   const handleRejectBid = async (bidId) => {
-    if (!sessionToken) {
-      Alert.alert('Error', 'Missing session token. Please login again.');
-      return;
-    }
-
+    if (!sessionToken) { Alert.alert('Error', 'Missing session token. Please login again.'); return; }
     const orderId = Number(activeOrder?.id);
     try {
       await rejectCustomerBid(sessionToken, orderId, Number(bidId));
@@ -510,9 +449,7 @@ export default function CustomerDashboard({ sessionToken }) {
   const handleDismissPrompt = async () => {
     if (ratingPromptOrder && sessionToken) {
       dismissedRatingIds.current.add(ratingPromptOrder.order_id);
-      try {
-        await submitCustomerRating(sessionToken, ratingPromptOrder.order_id, null);
-      } catch (_e) { /* silent — best effort skip */ }
+      try { await submitCustomerRating(sessionToken, ratingPromptOrder.order_id, null); } catch (_e) { }
     }
     setRatingPromptOrder(null);
     setPromptRating(null);
@@ -541,22 +478,35 @@ export default function CustomerDashboard({ sessionToken }) {
     fetchHistory();
   }, [activeTab, sessionToken]);
 
-  // On mount: check history for any completed unrated order and prompt
-  // (covers the case where the finished order was already rated and archived)
-
-  // When active order transitions to 'finished', show rating prompt immediately (or on re-open)
   useEffect(() => {
     if (!activeOrder || activeOrder.status !== 'finished') return;
     if (dismissedRatingIds.current.has(activeOrder.id)) return;
-    setRatingPromptOrder({
-      order_id: activeOrder.id,
-      quantity: activeOrder.gallons,
-      price: activeOrder.price,
-    });
+    setRatingPromptOrder({ order_id: activeOrder.id, quantity: activeOrder.gallons, price: activeOrder.price });
     setPromptRating(null);
   }, [activeOrder?.status, activeOrder?.id]);
 
-  const visibleBids = bids.filter((item) => getRemainingSeconds(item) > 0);
+
+  useEffect(() => {
+  if (!sessionToken || !socket) return;
+
+  const onOrderCancelled = ({ order_id, cancelled_by }) => {
+  setActiveOrder(null);
+  setBids([]);
+  setBidUpdatePrice('');
+  const who = cancelled_by === 'supplier' ? 'the supplier'
+    : cancelled_by === 'driver' ? 'the driver'
+    : cancelled_by === 'timer' ? 'timer expiry'
+    : cancelled_by;
+  setCancelledModalData({ order_id, who });
+};
+
+  socket.on('order_cancelled', onOrderCancelled);
+  return () => socket.off('order_cancelled', onOrderCancelled);
+}, [sessionToken, socket]);
+
+  // visibleBids is recomputed on every render — timerTick causes a render every second,
+  // so expired bids are filtered out automatically without a separate sweep interval.
+  const visibleBids = bids.filter((item) => getRemainingSeconds(item, timerTick) > 0);
   const minBid = Math.max(MIN_BID, Number(activeOrder?.price) || MIN_BID);
 
   if (loadingCurrentOrder) {
@@ -582,7 +532,7 @@ export default function CustomerDashboard({ sessionToken }) {
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Rate Your Delivery</Text>
-            <Text style={styles.modalSubtitle}>Order #{ratingPromptOrder?.order_id} — {ratingPromptOrder?.quantity} gal @ {ratingPromptOrder?.price}</Text>
+            <Text style={styles.modalSubtitle}>Order #{ratingPromptOrder?.order_id} — {ratingPromptOrder?.quantity} gal{ratingPromptOrder?.price}</Text>
             <View style={styles.starsRow}>
               {[1, 2, 3, 4, 5].map((star) => (
                 <BasicButton
@@ -605,6 +555,28 @@ export default function CustomerDashboard({ sessionToken }) {
               onPress={handleDismissPrompt}
               style={styles.ghostButton}
               textStyle={{ color: colors.textSecondary }}
+            />
+          </View>
+        </View>
+      </Modal>
+
+      {/* Cancellation Modal */}
+      <Modal
+        visible={cancelledModalData !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCancelledModalData(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Order Cancelled</Text>
+            <Text style={styles.modalSubtitle}>
+                Your order was cancelled by {cancelledModalData?.who}.
+            </Text>
+            <BasicButton
+              title="OK"
+              onPress={() => setCancelledModalData(null)}
+              style={styles.modalActionButton}
             />
           </View>
         </View>
@@ -682,7 +654,8 @@ export default function CustomerDashboard({ sessionToken }) {
                     {loadingBids ? <Text style={styles.hint}>Refreshing bids...</Text> : null}
                     {visibleBids.length === 0 ? <Text style={styles.emptyText}>No live bids right now</Text> : null}
                     {visibleBids.map((item) => {
-                      const remainingSeconds = getRemainingSeconds(item);
+                      // Pass timerTick so this re-evaluates every second
+                      const remainingSeconds = getRemainingSeconds(item, timerTick);
                       return (
                         <View key={String(item.bid_id)} style={styles.bidCard}>
                           <Text style={styles.row}><Text style={styles.label}>Supplier: </Text><Text style={styles.value}>{item.supplier_name || '-'}</Text></Text>
@@ -774,11 +747,7 @@ export default function CustomerDashboard({ sessionToken }) {
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
           {historyDetail ? (
             <View>
-              <BasicButton
-                title="← Back"
-                onPress={() => setHistoryDetail(null)}
-                style={styles.backButton}
-              />
+              <BasicButton title="← Back" onPress={() => setHistoryDetail(null)} style={styles.backButton} />
               <View style={styles.card}>
                 <Text style={styles.cardTitle}>Order #{historyDetail.order_id}</Text>
                 <Text style={styles.row}><Text style={styles.label}>Status: </Text><Text style={styles.value}>{historyDetail.status || '-'}</Text></Text>
@@ -849,199 +818,9 @@ export default function CustomerDashboard({ sessionToken }) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: colors.background,
-  },
-  loadingText: {
-    marginTop: spacing.sm,
-    color: colors.textSecondary,
-    fontSize: typography.body,
-  },
-  tabBar: {
-    flexDirection: 'row',
-    backgroundColor: colors.surface,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-    gap: spacing.xs,
-  },
-  tabButton: {
-    flex: 1,
-    marginTop: 0,
-  },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: spacing.md,
-    paddingBottom: spacing.xl,
-  },
-  pageTitle: {
-    fontSize: typography.subtitle,
-    fontWeight: '700',
-    color: colors.textPrimary,
-    marginBottom: spacing.sm,
-  },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.md,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
-    ...shadow.sm,
-  },
-  cardTitle: {
-    fontSize: typography.body,
-    fontWeight: '700',
-    color: colors.textPrimary,
-    marginBottom: spacing.xs,
-  },
-  infoCard: {
-    backgroundColor: colors.primaryLight,
-    borderRadius: radius.md,
-    borderLeftWidth: 4,
-    borderLeftColor: colors.primary,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
-  },
-  infoTitle: {
-    fontSize: typography.body,
-    fontWeight: '700',
-    color: colors.primaryDark,
-    marginBottom: spacing.xs,
-  },
-  bidCard: {
-    backgroundColor: colors.background,
-    borderRadius: radius.sm,
-    padding: spacing.sm,
-    marginTop: spacing.xs,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  row: {
-    fontSize: typography.label,
-    color: colors.textSecondary,
-    marginBottom: 2,
-  },
-  label: {
-    fontSize: typography.label,
-    color: colors.textSecondary,
-  },
-  value: {
-    color: colors.textPrimary,
-    fontWeight: '500',
-  },
-  hint: {
-    fontSize: typography.small,
-    color: colors.textSecondary,
-    marginTop: 4,
-  },
-  emptyText: {
-    fontSize: typography.body,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    marginTop: spacing.lg,
-  },
-  errorText: {
-    fontSize: typography.label,
-    color: colors.danger,
-    marginBottom: spacing.sm,
-  },
-  fieldLabel: {
-    fontSize: typography.label,
-    fontWeight: '600',
-    color: colors.textSecondary,
-    marginTop: spacing.sm,
-    marginBottom: 4,
-  },
-  input: {
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 10,
-    fontSize: typography.body,
-    color: colors.textPrimary,
-    backgroundColor: colors.surface,
-  },
-  pickerWrapper: {
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
-    backgroundColor: colors.surface,
-    overflow: 'hidden',
-    marginBottom: 4,
-  },
-  fullButton: {
-    marginTop: spacing.sm,
-  },
-  dangerButton: {
-    backgroundColor: colors.danger,
-  },
-  ghostButton: {
-    backgroundColor: 'transparent',
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    marginTop: spacing.xs,
-  },
-  actionRow: {
-    flexDirection: 'row',
-    gap: spacing.xs,
-    marginTop: spacing.xs,
-  },
-  actionButton: {
-    flex: 1,
-    marginTop: 0,
-  },
-  backButton: {
-    alignSelf: 'flex-start',
-    marginBottom: spacing.sm,
-    marginTop: 0,
-  },
-  bidUpdateRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    marginTop: spacing.xs,
-  },
-  bidStepButton: {
-    width: 44,
-    height: 44,
-    marginTop: 0,
-    paddingVertical: 0,
-    paddingHorizontal: 0,
-    borderRadius: radius.sm,
-  },
-  bidValueInput: {
-    flex: 1,
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 10,
-    fontSize: typography.body,
-    color: colors.textPrimary,
-    backgroundColor: colors.surface,
-    textAlign: 'center',
-  },
-  starsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginVertical: spacing.sm,
-    gap: 4,
-  },
-  starButton: {
-    flex: 1,
-    marginTop: 0,
-    paddingVertical: 10,
-  },
+  container: { flex: 1, backgroundColor: colors.background },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
+  loadingText: { marginTop: spacing.sm, color: colors.textSecondary, fontSize: typography.body },
   modalOverlay: {
     flex: 1,
     backgroundColor: colors.overlay,
@@ -1060,14 +839,84 @@ const styles = StyleSheet.create({
     fontSize: typography.subtitle,
     fontWeight: '700',
     color: colors.textPrimary,
-    marginBottom: 4,
-  },
-  modalSubtitle: {
-    fontSize: typography.label,
-    color: colors.textSecondary,
     marginBottom: spacing.sm,
   },
-  modalActionButton: {
-    marginTop: spacing.xs,
+  modalSubtitle: {
+    fontSize: typography.body,
+    color: colors.textSecondary,
+    marginBottom: spacing.md,
   },
+  modalActionButton: {
+    marginTop: 0,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: spacing.xs,
+  },
+  tabButton: { flex: 1, marginTop: 0 },
+  scroll: { flex: 1 },
+  scrollContent: { padding: spacing.md, paddingBottom: spacing.xl },
+  pageTitle: { fontSize: typography.subtitle, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.sm },
+  card: { backgroundColor: colors.surface, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm, ...shadow.sm },
+  cardTitle: { fontSize: typography.body, fontWeight: '700', color: colors.textPrimary, marginBottom: spacing.xs },
+  infoCard: {
+    backgroundColor: colors.primaryLight,
+    borderRadius: radius.md,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.primary,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  infoTitle: { fontSize: typography.body, fontWeight: '700', color: colors.primaryDark, marginBottom: spacing.xs },
+  bidCard: { backgroundColor: colors.background, borderRadius: radius.sm, padding: spacing.sm, marginTop: spacing.xs, borderWidth: 1, borderColor: colors.border },
+  row: { fontSize: typography.label, color: colors.textSecondary, marginBottom: 2 },
+  label: { fontSize: typography.label, color: colors.textSecondary },
+  value: { color: colors.textPrimary, fontWeight: '500' },
+  hint: { fontSize: typography.small, color: colors.textSecondary, marginTop: 4 },
+  emptyText: { fontSize: typography.body, color: colors.textSecondary, textAlign: 'center', marginTop: spacing.lg },
+  errorText: { fontSize: typography.label, color: colors.danger, marginBottom: spacing.sm },
+  fieldLabel: { fontSize: typography.label, fontWeight: '600', color: colors.textSecondary, marginTop: spacing.sm, marginBottom: 4 },
+  input: {
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 10,
+    fontSize: typography.body,
+    color: colors.textPrimary,
+    backgroundColor: colors.surface,
+  },
+  pickerWrapper: { borderWidth: 1.5, borderColor: colors.border, borderRadius: radius.sm, backgroundColor: colors.surface, overflow: 'hidden', marginBottom: 4 },
+  fullButton: { marginTop: spacing.sm },
+  dangerButton: { backgroundColor: colors.danger },
+  ghostButton: { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: colors.border, marginTop: spacing.xs },
+  actionRow: { flexDirection: 'row', gap: spacing.xs, marginTop: spacing.xs },
+  actionButton: { flex: 1, marginTop: 0 },
+  backButton: { alignSelf: 'flex-start', marginBottom: spacing.sm, marginTop: 0 },
+  bidUpdateRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginTop: spacing.xs },
+  bidStepButton: { width: 44, height: 44, marginTop: 0, paddingVertical: 0, paddingHorizontal: 0, borderRadius: radius.sm },
+  bidValueInput: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 10,
+    fontSize: typography.body,
+    color: colors.textPrimary,
+    backgroundColor: colors.surface,
+    textAlign: 'center',
+  },
+  starsRow: { flexDirection: 'row', justifyContent: 'space-between', marginVertical: spacing.sm, gap: 4 },
+  starButton: { flex: 1, marginTop: 0, paddingVertical: 10 },
+  modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'center', alignItems: 'center' },
+  modalBox: { width: '88%', maxWidth: 380, backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg, ...shadow.md },
+  modalTitle: { fontSize: typography.subtitle, fontWeight: '700', color: colors.textPrimary, marginBottom: 4 },
+  modalSubtitle: { fontSize: typography.label, color: colors.textSecondary, marginBottom: spacing.sm },
+  modalActionButton: { marginTop: spacing.xs },
 });

@@ -4,6 +4,7 @@ import { colors } from '../theme/tokens';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import SplashScreen from '../screens/SplashScreen';
 
 import {
     EnterPhoneScreen,
@@ -20,36 +21,35 @@ function StartupScreen({ navigation }) {
         (async () => {
             try {
                 const token = await AsyncStorage.getItem('session_token');
-                if (!token) {
-                    navigation.replace('EnterPhone');
-                    return;
-                }
-                const response = await startup(token);
+
+                // run API and 5 second timer simultaneously
+                const [response] = await Promise.all([
+                    token ? startup(token) : Promise.resolve(null),
+                    new Promise(resolve => setTimeout(resolve, 5000)), // minimum 5s splash
+                ]);
+
                 const nextScreen = response?.next_screen;
                 const phone = (await AsyncStorage.getItem('session_phone')) || '';
 
-                if (nextScreen === 'dashboard') {
+                if (!token || !nextScreen || nextScreen === 'enter_number') {
+                    await AsyncStorage.multiRemove(['session_token', 'session_phone']);
+                    navigation.replace('EnterPhone');
+                } else if (nextScreen === 'dashboard') {
                     const role = response?.user?.role;
                     navigation.replace('Dashboard', { phone, role, sessionToken: token });
                 } else if (nextScreen === 'enter_details') {
                     navigation.replace('EnterDetails', { phone, sessionToken: token });
                 } else {
-                    // Server explicitly says session is invalid — clear and re-login
                     await AsyncStorage.multiRemove(['session_token', 'session_phone']);
                     navigation.replace('EnterPhone');
                 }
             } catch (_e) {
-                // Network error or timeout — keep storage intact, let user retry login
                 navigation.replace('EnterPhone');
             }
         })();
     }, [navigation]);
 
-    return (
-        <View style={styles.screen}>
-            <ActivityIndicator size="large" color={colors.primary} />
-        </View>
-    );
+    return <SplashScreen />;
 }
 
 const styles = StyleSheet.create({

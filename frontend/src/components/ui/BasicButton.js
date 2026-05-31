@@ -5,12 +5,13 @@ export default function BasicButton({ title, onPress, disabled = false, style, t
     return (
         <Pressable
             onPress={disabled ? undefined : onPress}
-            android_ripple={{ color: colors.primaryDark }}
-            style={[
+            android_ripple={{ color: colors.ripple || 'rgba(0,0,0,0.1)' }}
+            style={({ pressed }) => [
                 styles.button,
                 selected ? styles.selected : null,
                 style,
                 disabled ? styles.disabled : null,
+                pressed && !disabled ? styles.pressed : null,  // ← Visual feedback on press
             ]}
         >
             <Text style={[styles.text, textStyle]}>{title}</Text>
@@ -33,6 +34,10 @@ const styles = StyleSheet.create({
     },
     disabled: {
         opacity: 0.45,
+    },
+    pressed: {                        // ← NEW: visual feedback for both iOS and Android
+        opacity: 0.7,
+        transform: [{ scale: 0.98 }],
     },
     text: {
         color: colors.textOnPrimary,

@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Alert, BackHandler, StyleSheet } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { io } from 'socket.io-client';
 import { colors, spacing, radius, typography } from '../theme/tokens';
+import { SOCKET_URL } from '../constants/config';
 import CustomerDashboard from './dashboard/CustomerDashboard';
 import SupplierDashboard from './dashboard/SupplierDashboard';
 import DriverDashboard from './dashboard/DriverDashboard';
@@ -27,6 +29,21 @@ export default function DashboardScreen({ route, navigation }) {
         const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
         return () => sub.remove();
     }, []);
+
+    const [socket, setSocket] = useState(null);
+
+    useEffect(() => {
+        if (!sessionToken) return;
+        const s = io(SOCKET_URL, {
+            auth: { token: sessionToken },
+            transports: ['websocket'],
+        });
+        setSocket(s);
+        return () => {
+            s.disconnect();
+            setSocket(null);
+        };
+    }, [sessionToken]);
 
     const logoutByRole = {
         customer: logoutCustomer,
@@ -76,9 +93,9 @@ export default function DashboardScreen({ route, navigation }) {
                 />
             </View>
             <View style={styles.content}>
-                {role === 'customer' && <CustomerDashboard sessionToken={sessionToken} />}
-                {role === 'supplier' && <SupplierDashboard sessionToken={sessionToken} />}
-                {role === 'driver' && <DriverDashboard sessionToken={sessionToken} />}
+                {role === 'customer' && <CustomerDashboard sessionToken={sessionToken} socket={socket} />}
+                {role === 'supplier' && <SupplierDashboard sessionToken={sessionToken} socket={socket} />}
+                {role === 'driver' && <DriverDashboard sessionToken={sessionToken} socket={socket} />}
                 {role !== 'customer' && role !== 'supplier' && role !== 'driver' && (
                     <Text style={styles.unknownRole}>Unknown role: {role}</Text>
                 )}

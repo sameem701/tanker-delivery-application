@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Alert, ScrollView, StyleSheet, Modal, ActivityIndicator } from 'react-native';
 import { colors, spacing, radius, typography, shadow } from '../../theme/tokens';
 import BasicButton from '../../components/ui/BasicButton';
+import Toast from '../../components/ui/Toast';
+
 import {
   getCurrentDriverOrder,
   getDriverOrderDetails,
@@ -31,7 +33,7 @@ function formatSeconds(secs) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-export default function DriverDashboard({ sessionToken }) {
+export default function DriverDashboard({ sessionToken, socket }) {
   const [activeTab, setActiveTab] = useState('task'); // task | history
   const [currentOrder, setCurrentOrder] = useState(null); // full order data + source + timers
   const [taskMessage, setTaskMessage] = useState('');
@@ -41,6 +43,8 @@ export default function DriverDashboard({ sessionToken }) {
   // Local countdown tick applied on top of server-provided remaining seconds
   const [supplierTimerTick, setSupplierTimerTick] = useState(0);
   const [driverTimerTick, setDriverTimerTick] = useState(0);
+  const [cancelledModalData, setCancelledModalData] = useState(null);
+
 
   const [historyOrders, setHistoryOrders] = useState([]);
   const [historyDetails, setHistoryDetails] = useState(null);
@@ -77,21 +81,18 @@ export default function DriverDashboard({ sessionToken }) {
     }
   }, [sessionToken]);
 
-  // Polling: idle (no order) every 8s, pending assignment every 3s, active delivery every 5s
+  // Socket: load order on mount and when assignment/status events arrive
   useEffect(() => {
     if (!sessionToken || activeTab !== 'task') return;
     loadCurrentOrder();
-
-    const isPendingPhase = currentOrder?.status === 'supplier_timer' && currentOrder?.source === 'pending_assignment';
-    const isActivePhase = ['accepted', 'ride_started', 'reached'].includes(currentOrder?.status);
-    const isIdle = !currentOrder;
-
-    const interval = setInterval(
-      loadCurrentOrder,
-      isPendingPhase ? 3000 : isActivePhase ? 5000 : 5000
-    );
-    return () => clearInterval(interval);
-  }, [sessionToken, activeTab, currentOrder?.status, currentOrder?.source]);
+    if (!socket) return;
+    socket.on('order_assigned', loadCurrentOrder);
+    socket.on('order_updated', loadCurrentOrder);
+    return () => {
+      socket.off('order_assigned', loadCurrentOrder);
+      socket.off('order_updated', loadCurrentOrder);
+    };
+  }, [sessionToken, activeTab, loadCurrentOrder, socket]);
 
   // Local countdown ticks: decrement every second while in supplier_timer phase
   useEffect(() => {
@@ -110,6 +111,23 @@ export default function DriverDashboard({ sessionToken }) {
     if (!sessionToken || activeTab !== 'history') return;
     fetchHistory();
   }, [sessionToken, activeTab]);
+
+  useEffect(() => {
+    if (!sessionToken || !socket) return;
+
+    const onOrderCancelled = ({ order_id, cancelled_by }) => {
+      setCurrentOrder(null);
+      setTaskMessage('');
+      const who = cancelled_by === 'supplier' ? 'the supplier'
+        : cancelled_by === 'customer' ? 'the customer'
+          : cancelled_by === 'timer' ? 'timer expiry'
+            : cancelled_by;
+      setCancelledModalData({ order_id, who });
+    };
+
+    socket.on('order_cancelled', onOrderCancelled);
+    return () => socket.off('order_cancelled', onOrderCancelled);
+  }, [sessionToken, socket]);
 
   const fetchHistory = async () => {
     if (!sessionToken) return;
@@ -274,6 +292,29 @@ export default function DriverDashboard({ sessionToken }) {
           </View>
         </View>
       </Modal>
+
+      {/* Cancellation Modal */}
+      <Modal
+        visible={cancelledModalData !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCancelledModalData(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Order Cancelled</Text>
+            <Text style={styles.receiptRow}>
+              Your order was cancelled by {cancelledModalData?.who}.
+            </Text>
+            <View style={styles.divider} />
+            <BasicButton
+              title="OK"
+              onPress={() => setCancelledModalData(null)}
+              style={styles.okButton}
+            />
+          </View>
+        </View>
+      </Modal>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         <View style={styles.topTabsRow}>
           <BasicButton title="Task" selected={activeTab === 'task'} onPress={() => setActiveTab('task')} style={styles.tabButton} />
@@ -284,7 +325,12 @@ export default function DriverDashboard({ sessionToken }) {
           <View style={styles.section}>
             <View style={styles.rowBetween}>
               <Text style={[styles.sectionTitle, { flex: 1 }]}>Current Task</Text>
-              <BasicButton title="Refresh" onPress={loadCurrentOrder} style={styles.inlineButton} />
+              <BasicButton
+                title="Refresh"
+                onPress={loadCurrentOrder}
+                disabled={loadingTask}
+                style={styles.inlineButton}
+              />
             </View>
 
             {!sessionToken ? <Text style={styles.errorText}>Session missing. Login again.</Text> : null}
@@ -309,12 +355,15 @@ export default function DriverDashboard({ sessionToken }) {
                   <Text style={styles.cardRow}><Text style={styles.cardLabel}>Location: </Text>{currentOrder.delivery_location}</Text>
                   <Text style={styles.cardRow}><Text style={styles.cardLabel}>Qty: </Text>{currentOrder.quantity} gal</Text>
                   <Text style={styles.cardRow}><Text style={styles.cardLabel}>Price: </Text>{currentOrder.price}</Text>
-                </View>
 
-                {/* Customer info */}
-                <View style={styles.card}>
-                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Customer: </Text>{currentOrder.customer_name || '-'}</Text>
-                  <Text style={styles.cardRow}><Text style={styles.cardLabel}>Phone: </Text>{currentOrder.customer_phone || '-'}</Text>
+                  <Text style={styles.cardRow}>
+                    <Text style={styles.cardLabel}>Customer: </Text>
+                    {currentOrder.status !== 'supplier_timer' ? (currentOrder.customer_name || '-') : '-'}
+                  </Text>
+                  <Text style={styles.cardRow}>
+                    <Text style={styles.cardLabel}>Phone: </Text>
+                    {currentOrder.status !== 'supplier_timer' ? (currentOrder.customer_phone || '-') : '-'}
+                  </Text>
                 </View>
 
                 {/* Pending assignment phase: timers + accept/reject */}
@@ -373,7 +422,6 @@ export default function DriverDashboard({ sessionToken }) {
                   style={styles.backButton}
                 />
                 <View style={styles.card}>
-                  <Text style={styles.cardTitle}>Order #{historyDetails.order_id || '-'}</Text>
                   <Text style={styles.cardRow}><Text style={styles.cardLabel}>Status: </Text>{historyDetails.status || '-'}</Text>
                   <Text style={styles.cardRow}><Text style={styles.cardLabel}>Date: </Text>{formatDate(historyDetails.order_date)}</Text>
                   <Text style={styles.cardRow}><Text style={styles.cardLabel}>Customer: </Text>{historyDetails.customer_name || '-'}</Text>
@@ -385,8 +433,10 @@ export default function DriverDashboard({ sessionToken }) {
               </View>
             ) : (
               <View>
-                <Text style={styles.sectionTitle}>Past Orders</Text>
-                <BasicButton title="Refresh History" onPress={fetchHistory} style={styles.fullButton} />
+                <View style={styles.rowBetween}>
+                  <Text style={styles.sectionTitle}>Past Orders</Text>
+                  <BasicButton title="Refresh" onPress={fetchHistory} style={styles.inlineButton} />
+                </View>
                 {loadingHistory ? <Text>Loading history...</Text> : null}
                 {historyOrders.length === 0 ? <Text>No past orders.</Text> : null}
                 {historyOrders.map((item) => (
@@ -410,6 +460,32 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
+    alignItems: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: colors.overlay,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBox: {
+    width: '88%',
+    maxWidth: 380,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    ...shadow.md,
+  },
+  modalTitle: {
+    fontSize: typography.subtitle,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: spacing.sm,
+  },
+  modalSubtitle: {
+    fontSize: typography.body,
+    color: colors.textSecondary,
+    marginBottom: spacing.md,
   },
   scroll: {
     alignSelf: 'stretch',

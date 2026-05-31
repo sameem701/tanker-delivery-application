@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, Alert, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, Alert, ScrollView, StyleSheet, ActivityIndicator, Modal } from 'react-native';
 import { colors, spacing, radius, typography, shadow } from '../../theme/tokens';
 import BasicButton from '../../components/ui/BasicButton';
 import {
@@ -27,7 +27,7 @@ function formatDate(val) {
     return `${dd}/${mm}/${d.getFullYear()}`;
 }
 
-export default function SupplierDashboard({ sessionToken }) {
+export default function SupplierDashboard({ sessionToken, socket }) {
     const [activeTab, setActiveTab] = useState('market'); // market | orders | drivers
     const [ordersTab, setOrdersTab] = useState('active'); // active | past
 
@@ -56,8 +56,14 @@ export default function SupplierDashboard({ sessionToken }) {
     // Past order detail state
     const [pastOrderDetail, setPastOrderDetail] = useState(null);
 
-    // Track which supplier_timer orders we've already auto-navigated to, so we only do it once per order
-    const autoNavigatedRef = useRef(new Set());
+    // Modal states
+    const [cancelledModalData, setCancelledModalData] = useState(null);
+    const [completedModalData, setCompletedModalData] = useState(null);
+    const [pendingSupplierTimerOrder, setPendingSupplierTimerOrder] = useState(null);
+    const [showSupplierTimerNotificationModal, setShowSupplierTimerNotificationModal] = useState(false);
+
+    // Track which supplier_timer orders we've already shown notification for
+    const notifiedOrdersRef = useRef(new Set());
 
     // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -85,7 +91,7 @@ export default function SupplierDashboard({ sessionToken }) {
 
     // ─── Data fetchers ─────────────────────────────────────────────────────────
 
-    const fetchLiveMarket = async () => {
+    const fetchLiveMarket = useCallback(async () => {
         if (!sessionToken) return;
         try {
             setLoadingMarket(true);
@@ -96,7 +102,7 @@ export default function SupplierDashboard({ sessionToken }) {
         } finally {
             setLoadingMarket(false);
         }
-    };
+    }, [sessionToken]);
 
     const fetchActiveOrders = useCallback(async () => {
         if (!sessionToken) return;
@@ -111,7 +117,7 @@ export default function SupplierDashboard({ sessionToken }) {
         }
     }, [sessionToken]);
 
-    const fetchPastOrderDetail = async (orderId) => {
+    const fetchPastOrderDetail = useCallback(async (orderId) => {
         if (!sessionToken) return;
         try {
             const response = await getPastSupplierOrderDetail(sessionToken, orderId);
@@ -119,9 +125,9 @@ export default function SupplierDashboard({ sessionToken }) {
         } catch (error) {
             Alert.alert('Error', error.message || 'Failed to fetch order details');
         }
-    };
+    }, [sessionToken]);
 
-    const fetchPastOrders = async () => {
+    const fetchPastOrders = useCallback(async () => {
         if (!sessionToken) return;
         try {
             setLoadingOrders(true);
@@ -132,9 +138,9 @@ export default function SupplierDashboard({ sessionToken }) {
         } finally {
             setLoadingOrders(false);
         }
-    };
+    }, [sessionToken]);
 
-    const fetchDrivers = async () => {
+    const fetchDrivers = useCallback(async () => {
         if (!sessionToken) return;
         try {
             setLoadingDrivers(true);
@@ -145,7 +151,7 @@ export default function SupplierDashboard({ sessionToken }) {
         } finally {
             setLoadingDrivers(false);
         }
-    };
+    }, [sessionToken]);
 
     const fetchOrderDetail = useCallback(async (orderId) => {
         if (!sessionToken || !orderId) return;
@@ -255,6 +261,57 @@ export default function SupplierDashboard({ sessionToken }) {
         );
     };
 
+    // Helper: Find the next unnotified supplier_timer order
+    const getNextUnnotifiedSupplierTimerOrder = () => {
+        for (const order of activeOrders) {
+            if (order.status === 'supplier_timer') {
+                const orderId = order.order_id || order.id;
+                if (orderId && !notifiedOrdersRef.current.has(orderId)) {
+                    return order;
+                }
+            }
+        }
+        return null;
+    };
+
+    const handleViewAndAssignDriver = () => {
+        if (!pendingSupplierTimerOrder) return;
+        const orderId = pendingSupplierTimerOrder.order_id || pendingSupplierTimerOrder.id;
+
+        // Navigate to detail view
+        setActiveTab('orders');
+        setOrdersTab('active');
+        setSelectedOrderId(orderId);
+        setOrderDetail(null);
+        setAssignableDrivers([]);
+
+        // Check for next unnotified order
+        const nextOrder = getNextUnnotifiedSupplierTimerOrder();
+        if (nextOrder) {
+            const nextOrderId = nextOrder.order_id || nextOrder.id;
+            notifiedOrdersRef.current.add(nextOrderId);
+            setPendingSupplierTimerOrder(nextOrder);
+            setShowSupplierTimerNotificationModal(true);
+        } else {
+            setShowSupplierTimerNotificationModal(false);
+            setPendingSupplierTimerOrder(null);
+        }
+    };
+
+    const handleDismissSupplierTimerNotification = () => {
+        // Check for next unnotified order
+        const nextOrder = getNextUnnotifiedSupplierTimerOrder();
+        if (nextOrder) {
+            const nextOrderId = nextOrder.order_id || nextOrder.id;
+            notifiedOrdersRef.current.add(nextOrderId);
+            setPendingSupplierTimerOrder(nextOrder);
+            setShowSupplierTimerNotificationModal(true);
+        } else {
+            setShowSupplierTimerNotificationModal(false);
+            setPendingSupplierTimerOrder(null);
+        }
+    };
+
     const handleSendBid = async (orderId) => {
         if (!sessionToken) {
             Alert.alert('Error', 'Missing session token. Please login again.');
@@ -323,20 +380,58 @@ export default function SupplierDashboard({ sessionToken }) {
 
     // ─── Effects ───────────────────────────────────────────────────────────────
 
-    // Poll market + active orders on mount and every 5 seconds
+    // Socket: refresh market + active orders on relevant events
     useEffect(() => {
         if (!sessionToken) return;
 
         fetchLiveMarket();
         fetchActiveOrders();
 
-        const interval = setInterval(() => {
-            fetchLiveMarket();
-            fetchActiveOrders();
-        }, 5000);
+        if (!socket) return;
 
-        return () => clearInterval(interval);
-    }, [sessionToken, fetchActiveOrders]);
+        const onMarketUpdated = () => fetchLiveMarket();
+        const onOrderStatusChanged = () => fetchActiveOrders();
+        const onOrderUpdated = (data) => {
+            fetchActiveOrders();
+            if (selectedOrderId && Number(data?.order_id) === Number(selectedOrderId)) {
+                fetchOrderDetail(selectedOrderId);
+            }
+        };
+        const onOrderCancelled = (data) => {
+            // Clear detail view if this is the order currently being viewed
+            if (Number(selectedOrderId) === Number(data.order_id)) {
+                setSelectedOrderId(null);
+                setOrderDetail(null);
+                setAssignableDrivers([]);
+            }
+            fetchActiveOrders();
+            setCancelledModalData({ order_id: data.order_id, who: data.cancelled_by });
+        };
+        const onOrderCompleted = (data) => {
+            // Clear detail view if this is the order currently being viewed
+            if (Number(selectedOrderId) === Number(data.order_id)) {
+                setSelectedOrderId(null);
+                setOrderDetail(null);
+                setAssignableDrivers([]);
+            }
+            fetchActiveOrders();
+            setCompletedModalData({ order_id: data.order_id, quantity: data.quantity, price: data.price });
+        };
+
+        socket.on('market_updated', onMarketUpdated);
+        socket.on('order_status_changed', onOrderStatusChanged);
+        socket.on('order_updated', onOrderUpdated);
+        socket.on('order_cancelled', onOrderCancelled);
+        socket.on('order_completed', onOrderCompleted);
+
+        return () => {
+            socket.off('market_updated', onMarketUpdated);
+            socket.off('order_status_changed', onOrderStatusChanged);
+            socket.off('order_updated', onOrderUpdated);
+            socket.off('order_cancelled', onOrderCancelled);
+            socket.off('order_completed', onOrderCompleted);
+        };
+    }, [sessionToken, socket, fetchLiveMarket, fetchActiveOrders, selectedOrderId]);
 
     // Load tab-specific data when switching tabs
     useEffect(() => {
@@ -348,29 +443,23 @@ export default function SupplierDashboard({ sessionToken }) {
         } else {
             fetchPastOrders();
         }
-    }, [activeTab, ordersTab, sessionToken]);
+    }, [activeTab, ordersTab, sessionToken, fetchActiveOrders, fetchPastOrders]);
 
     useEffect(() => {
         if (!sessionToken) return;
         if (activeTab !== 'drivers') return;
         fetchDrivers();
-    }, [activeTab, sessionToken]);
+    }, [activeTab, sessionToken, fetchDrivers]);
 
-    // Auto-navigate to orders → detail view when a supplier_timer order first appears
+    // Show notification modal when a new supplier_timer order arrives
     useEffect(() => {
-        const supplierTimerOrder = activeOrders.find((o) => o.status === 'supplier_timer');
-        if (!supplierTimerOrder) return;
-
-        const orderId = supplierTimerOrder.order_id || supplierTimerOrder.id;
-        if (!orderId) return;
-        if (autoNavigatedRef.current.has(orderId)) return;
-
-        autoNavigatedRef.current.add(orderId);
-        setActiveTab('orders');
-        setOrdersTab('active');
-        setSelectedOrderId(orderId);
-        setOrderDetail(null);
-        setAssignableDrivers([]);
+    const nextOrder = getNextUnnotifiedSupplierTimerOrder();
+    if (!nextOrder) return;
+    if (showSupplierTimerNotificationModal) return; // modal already open, chaining handles it
+    const orderId = nextOrder.order_id || nextOrder.id;
+    notifiedOrdersRef.current.add(orderId);
+    setPendingSupplierTimerOrder(nextOrder);
+    setShowSupplierTimerNotificationModal(true);
     }, [activeOrders]);
 
     // Reset timerTick each time we get fresh order detail from the server
@@ -385,26 +474,38 @@ export default function SupplierDashboard({ sessionToken }) {
         fetchAssignableDrivers(selectedOrderId);
     }, [selectedOrderId, fetchOrderDetail, fetchAssignableDrivers]);
 
-    // While viewing a supplier_timer order: poll server every 3 seconds + tick timer every 1 second
+    // While viewing a supplier_timer order: refresh on driver_responded events and keep the local countdown tick
     useEffect(() => {
         if (!selectedOrderId) return;
         if (!orderDetail) return;
         if (orderDetail.status !== 'supplier_timer') return;
 
-        const pollInterval = setInterval(() => {
-            fetchOrderDetail(selectedOrderId);
-            fetchAssignableDrivers(selectedOrderId);
-        }, 3000);
-
         const timerInterval = setInterval(() => {
             setTimerTick((t) => t + 1);
         }, 1000);
 
-        return () => {
-            clearInterval(pollInterval);
-            clearInterval(timerInterval);
+        if (!socket) {
+            return () => clearInterval(timerInterval);
+        }
+
+        const onDriverResponded = () => {
+            fetchOrderDetail(selectedOrderId);
+            fetchAssignableDrivers(selectedOrderId);
         };
-    }, [selectedOrderId, orderDetail?.status, fetchOrderDetail, fetchAssignableDrivers]);
+
+        const onAvailableDriversUpdated = () => {
+            // When a driver comes online, refresh the assignable drivers list
+            fetchAssignableDrivers(selectedOrderId);
+        };
+
+        socket.on('driver_responded', onDriverResponded);
+        socket.on('available_drivers_updated', onAvailableDriversUpdated);
+        return () => {
+            clearInterval(timerInterval);
+            socket.off('driver_responded', onDriverResponded);
+            socket.off('available_drivers_updated', onAvailableDriversUpdated);
+        };
+    }, [selectedOrderId, orderDetail?.status, fetchOrderDetail, fetchAssignableDrivers, socket]);
 
     // ─── Render helpers ────────────────────────────────────────────────────────
 
@@ -541,7 +642,7 @@ export default function SupplierDashboard({ sessionToken }) {
                             const driverPhone = driver.driver_phone_num || driver.phone || '-';
                             return (
                                 <View key={String(driverId)} style={styles.driverAssignCard}>
-                                    <Text style={styles.cardTitle}>{driverName}</Text>
+                                    <Text style={styles.cardRow}><Text style={styles.cardLabel}>Name: </Text>{driverName}</Text>
                                     <Text style={styles.cardRow}><Text style={styles.cardLabel}>Phone: </Text>{driverPhone}</Text>
                                     <BasicButton
                                         title="Assign This Driver"
@@ -584,6 +685,77 @@ export default function SupplierDashboard({ sessionToken }) {
 
     return (
         <View style={styles.container}>
+            {/* Supplier Timer Notification Modal */}
+            <Modal
+                visible={showSupplierTimerNotificationModal}
+                transparent
+                animationType="fade"
+                onRequestClose={handleDismissSupplierTimerNotification}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalBox}>
+                        <Text style={styles.modalTitle}>Order Accepted ✓</Text>
+                        <Text style={{ marginBottom: spacing.md }}>
+                            Order #{pendingSupplierTimerOrder?.order_id || '-'} has been accepted. Please assign a driver to confirm the delivery.
+                        </Text>
+                        <BasicButton
+                            title="View & Assign Driver"
+                            onPress={handleViewAndAssignDriver}
+                            style={{ marginTop: 0 }}
+                        />
+                        <BasicButton
+                            title="I'll Handle It Later"
+                            onPress={handleDismissSupplierTimerNotification}
+                            style={[{ marginTop: spacing.sm }, { backgroundColor: colors.primaryLight }]}
+                        />
+                    </View>
+                </View>
+            </Modal>
+
+            {/* Cancellation Modal */}
+            <Modal
+                visible={cancelledModalData !== null}
+                transparent
+                animationType="fade"
+                onRequestClose={() => setCancelledModalData(null)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalBox}>
+                        <Text style={styles.modalTitle}>Order Cancelled</Text>
+                        <Text style={{ marginBottom: spacing.md }}>
+                            Order #{cancelledModalData?.order_id} was cancelled by {cancelledModalData?.who}.
+                        </Text>
+                        <BasicButton
+                            title="OK"
+                            onPress={() => setCancelledModalData(null)}
+                            style={{ marginTop: 0 }}
+                        />
+                    </View>
+                </View>
+            </Modal>
+
+            {/* Completion Modal */}
+            <Modal
+                visible={completedModalData !== null}
+                transparent
+                animationType="fade"
+                onRequestClose={() => setCompletedModalData(null)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalBox}>
+                        <Text style={styles.modalTitle}>Order Completed ✓</Text>
+                        <Text style={{ marginBottom: spacing.md }}>
+                            Order #{completedModalData?.order_id} has been successfully delivered.
+                        </Text>
+                        <BasicButton
+                            title="OK"
+                            onPress={() => setCompletedModalData(null)}
+                            style={{ marginTop: 0 }}
+                        />
+                    </View>
+                </View>
+            </Modal>
+
             {!showingOrderDetail && !showingMarketDetail && (
                 <View style={styles.topTabsRow}>
                     <BasicButton title="Live Market" selected={activeTab === 'market'} onPress={() => setActiveTab('market')} style={styles.tabButton} />
@@ -609,7 +781,6 @@ export default function SupplierDashboard({ sessionToken }) {
                             const area = extractArea(item.delivery_location);
                             return (
                                 <View key={orderKey(item)} style={styles.card}>
-                                    <Text style={styles.cardTitle}>Order #{orderId}</Text>
                                     <Text style={styles.cardRow}><Text style={styles.cardLabel}>Area: </Text>{area}</Text>
                                     <Text style={styles.cardRow}><Text style={styles.cardLabel}>Gallons: </Text>{item.requested_capacity}<Text style={styles.cardLabel}>  Offer: </Text>{item.customer_bid_price}</Text>
                                     <View style={styles.bidRow}>
@@ -637,48 +808,6 @@ export default function SupplierDashboard({ sessionToken }) {
                             );
                         })}
                     </ScrollView>
-
-                    {/* Active orders — pinned bottom, horizontal scroll */}
-                    <View style={styles.activeOrdersBar}>
-                        <BasicButton
-                            title="View All Orders"
-                            style={[styles.fullButton, { marginBottom: 6 }]}
-                            onPress={() => {
-                                setActiveTab('orders');
-                                setOrdersTab('active');
-                            }}
-                        />
-                        <Text style={styles.sectionTitle}>Active Orders ({activeOrders.length})</Text>
-                        {activeOrders.length === 0 ? (
-                            <Text style={styles.emptyText}>No active orders</Text>
-                        ) : (
-                            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                                {activeOrders.map((item) => {
-                                    const orderId = item.order_id || item.id;
-                                    return (
-                                        <View key={orderKey(item)} style={styles.activeOrderCard}>
-                                            <Text style={styles.cardTitle}>Order #{orderId}</Text>
-                                            <Text style={styles.cardRow}>{item.status}</Text>
-                                            <Text style={styles.cardRow}><Text style={styles.cardLabel}>Qty: </Text>{item.requested_capacity || item.quantity || '-'}</Text>
-                                            <Text style={styles.cardRow}><Text style={styles.cardLabel}>Date: </Text>{formatDate(item.order_date || item.created_at)}</Text>
-                                            {item.status === 'supplier_timer' ? (
-                                                <Text style={styles.timerBadge}>⏱ Assign driver!</Text>
-                                            ) : null}
-                                            <BasicButton
-                                                title="Details"
-                                                onPress={() => {
-                                                    setActiveTab('orders');
-                                                    setOrdersTab('active');
-                                                    handleSelectOrder(orderId);
-                                                }}
-                                                style={styles.fullButton}
-                                            />
-                                        </View>
-                                    );
-                                })}
-                            </ScrollView>
-                        )}
-                    </View>
                 </View>
             ) : (
                 <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
@@ -698,7 +827,6 @@ export default function SupplierDashboard({ sessionToken }) {
                                         const orderId = item.order_id || item.id;
                                         return (
                                             <View key={orderKey(item)} style={styles.card}>
-                                                <Text style={styles.cardTitle}>Order #{orderId}</Text>
                                                 <Text style={styles.cardRow}><Text style={styles.cardLabel}>Status: </Text>{item.status}</Text>
                                                 <Text style={styles.cardRow}><Text style={styles.cardLabel}>Location: </Text>{item.delivery_location ? extractArea(item.delivery_location) : '-'}</Text>
                                                 <Text style={styles.cardRow}><Text style={styles.cardLabel}>Qty: </Text>{item.requested_capacity || item.quantity || '-'} gal</Text>
@@ -742,7 +870,6 @@ export default function SupplierDashboard({ sessionToken }) {
                                             {pastOrders.length === 0 ? <Text>No past orders</Text> : null}
                                             {pastOrders.map((item) => (
                                                 <View key={orderKey(item)} style={styles.card}>
-                                                    <Text style={styles.cardTitle}>Order #{item.order_id || item.id}</Text>
                                                     <Text style={styles.cardRow}><Text style={styles.cardLabel}>Status: </Text>{item.status || 'Completed'}</Text>
                                                     <Text style={styles.cardRow}><Text style={styles.cardLabel}>Location: </Text>{item.delivery_location ? extractArea(item.delivery_location) : '-'}</Text>
                                                     <Text style={styles.cardRow}><Text style={styles.cardLabel}>Qty: </Text>{item.requested_capacity || item.quantity || '-'} gal</Text>
@@ -799,19 +926,25 @@ const styles = StyleSheet.create({
         width: '100%',
         paddingHorizontal: spacing.md,
     },
-    activeOrdersBar: {
-        borderTopWidth: 1,
-        borderTopColor: colors.border,
-        paddingTop: spacing.sm,
-        paddingBottom: spacing.sm,
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: colors.overlay,
+        justifyContent: 'center',
+        alignItems: 'center',
     },
-    activeOrderCard: {
-        width: 160,
+    modalBox: {
+        width: '88%',
+        maxWidth: 380,
         backgroundColor: colors.surface,
-        borderRadius: radius.md,
-        padding: spacing.sm,
-        marginRight: spacing.sm,
-        ...shadow.sm,
+        borderRadius: radius.lg,
+        padding: spacing.lg,
+        ...shadow.md,
+    },
+    modalTitle: {
+        fontSize: typography.subtitle,
+        fontWeight: '700',
+        color: colors.textPrimary,
+        marginBottom: spacing.sm,
     },
     bidRow: {
         flexDirection: 'row',
@@ -843,7 +976,6 @@ const styles = StyleSheet.create({
         marginTop: 0,
         paddingVertical: 0,
         paddingHorizontal: 4,
-        backgroundColor: colors.primaryLight,
     },
     bidButtonText: {
         fontSize: typography.small,
@@ -888,7 +1020,7 @@ const styles = StyleSheet.create({
         marginTop: spacing.xs,
     },
     sectionTitle: {
-        fontSize: typography.body,
+        fontSize: typography.label,
         fontWeight: '700',
         color: colors.textPrimary,
         marginBottom: spacing.xs,
@@ -901,7 +1033,7 @@ const styles = StyleSheet.create({
         ...shadow.sm,
     },
     cardTitle: {
-        fontSize: typography.body,
+        fontSize: typography.label,
         fontWeight: '700',
         color: colors.textPrimary,
         marginBottom: 4,

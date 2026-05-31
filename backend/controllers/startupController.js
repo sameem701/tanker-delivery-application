@@ -424,6 +424,7 @@ const getCurrentOrderDriver = async (req, res) => {
 
 
 const { query } = require('../config/database');
+const { emitToUser, emitToSuppliers } = require('../socket');
 
 const getAuthenticatedUserId = async (req) => {
   const authHeader = req.headers.authorization || '';
@@ -582,6 +583,15 @@ const appStartup = async (req, res) => {
 
     if (user.role === 'customer') {
       await clearCustomerOpenOrdersOnLogin(user.user_id);
+    }
+
+    if (user.role === 'driver') {
+    await query(
+        `UPDATE supplier_drivers 
+         SET available = TRUE 
+         WHERE driver_user_id = $1`,
+        [user.user_id]
+    );
     }
 
     // Route by onboarding state: undefined role must complete details first.
@@ -1285,6 +1295,7 @@ const startCustomerOrder = async (req, res) => {
       });
     }
 
+    emitToSuppliers('market_updated', { order_id: response.order_id });
     return res.status(200).json({
       success: true,
       message: response.message || 'Order created successfully',
@@ -1410,6 +1421,7 @@ const updateCustomerOpenOrderBid = async (req, res) => {
       });
     }
 
+    emitToSuppliers('market_updated', { order_id: response.order_id });
     return res.status(200).json({
       success: true,
       message: response.message || 'Order bid updated successfully',
@@ -1458,7 +1470,7 @@ const acceptSupplierBidForCustomer = async (req, res) => {
     }
 
     const bidBelongsResult = await query(
-      'SELECT 1 FROM bids WHERE bid_id = $1 AND order_id = $2',
+      'SELECT supplier_id FROM bids WHERE bid_id = $1 AND order_id = $2',
       [bidId, orderId]
     );
 
@@ -1489,6 +1501,8 @@ const acceptSupplierBidForCustomer = async (req, res) => {
       });
     }
 
+    emitToUser(bidBelongsResult.rows[0]?.supplier_id, 'order_status_changed', { order_id: orderId });
+    emitToSuppliers('market_updated', { order_id: orderId });
     return res.status(200).json({
       success: true,
       message: response.message || 'Bid accepted successfully',
@@ -1708,10 +1722,11 @@ const placeSupplierBid = async (req, res) => {
     }
 
     const customerPriceResult = await query(
-      `SELECT customer_bid_price FROM orders WHERE order_id = $1`,
+      `SELECT customer_bid_price, customer_id FROM orders WHERE order_id = $1`,
       [orderId]
     );
     const customerBidPrice = Number(customerPriceResult.rows[0]?.customer_bid_price);
+    const bidOrderCustomerId = customerPriceResult.rows[0]?.customer_id;
 
     if (Number.isFinite(customerBidPrice)) {
       if (bidPrice < customerBidPrice) {
@@ -1776,6 +1791,7 @@ const placeSupplierBid = async (req, res) => {
       });
     }
 
+    emitToUser(bidOrderCustomerId, 'bid_posted', { order_id: orderId });
     return res.status(200).json({
       success: true,
       message: response.message || 'Bid placed successfully',
@@ -2023,6 +2039,9 @@ const assignDriverForSupplierOrder = async (req, res) => {
       });
     }
 
+    const assignCustRow = await query('SELECT customer_id FROM orders WHERE order_id = $1', [orderId]);
+    emitToUser(assignCustRow.rows[0]?.customer_id, 'order_updated', { order_id: orderId });
+    emitToUser(driverId, 'order_assigned', { order_id: orderId });
     return res.status(200).json({
       success: true,
       message: response.message || 'Driver assigned successfully',
@@ -2062,6 +2081,7 @@ const acceptAssignedOrderForDriver = async (req, res) => {
       });
     }
 
+    const acceptCustRow = await query('SELECT customer_id, supplier_id FROM orders WHERE order_id = $1', [orderId]);
     const dbResult = await query('SELECT accept_order_driver($1, $2) AS result', [
       driverId,
       orderId
@@ -2078,6 +2098,8 @@ const acceptAssignedOrderForDriver = async (req, res) => {
       });
     }
 
+    emitToUser(acceptCustRow.rows[0]?.customer_id, 'order_updated', { order_id: orderId });
+    emitToUser(acceptCustRow.rows[0]?.supplier_id, 'driver_responded', { order_id: orderId });
     return res.status(200).json({
       success: true,
       message: response.message || 'Order confirmed successfully',
@@ -2117,6 +2139,7 @@ const rejectAssignedOrderForDriver = async (req, res) => {
       });
     }
 
+    const rejectSuppRow = await query('SELECT supplier_id FROM orders WHERE order_id = $1', [orderId]);
     const dbResult = await query('SELECT reject_order_driver($1, $2) AS result', [
       driverId,
       orderId
@@ -2133,6 +2156,7 @@ const rejectAssignedOrderForDriver = async (req, res) => {
       });
     }
 
+    emitToUser(rejectSuppRow.rows[0]?.supplier_id, 'driver_responded', { order_id: orderId });
     return res.status(200).json({
       success: true,
       message: response.message || 'Order rejected successfully',
@@ -2171,6 +2195,7 @@ const startRideForDriver = async (req, res) => {
       });
     }
 
+    const startRideCustRow = await query('SELECT customer_id FROM orders WHERE order_id = $1', [orderId]);
     const dbResult = await query('SELECT start_ride($1, $2) AS result', [driverId, orderId]);
     const response = dbResult.rows[0].result;
 
@@ -2181,6 +2206,7 @@ const startRideForDriver = async (req, res) => {
       });
     }
 
+    emitToUser(startRideCustRow.rows[0]?.customer_id, 'order_updated', { order_id: orderId });
     return res.status(200).json({
       success: true,
       message: response.message || 'Ride started successfully',
@@ -2220,6 +2246,7 @@ const markOrderReachedForDriver = async (req, res) => {
       });
     }
 
+    const reachedCustRow = await query('SELECT customer_id FROM orders WHERE order_id = $1', [orderId]);
     const dbResult = await query('SELECT mark_order_reached($1, $2) AS result', [driverId, orderId]);
     const response = dbResult.rows[0].result;
 
@@ -2230,6 +2257,7 @@ const markOrderReachedForDriver = async (req, res) => {
       });
     }
 
+    emitToUser(reachedCustRow.rows[0]?.customer_id, 'order_updated', { order_id: orderId });
     return res.status(200).json({
       success: true,
       message: response.message || 'Marked as reached successfully',
@@ -2269,6 +2297,11 @@ const finishOrderForDriver = async (req, res) => {
       });
     }
 
+    const finishCustRow = await query(
+  'SELECT customer_id, supplier_id, requested_capacity, accepted_price FROM orders WHERE order_id = $1', 
+  [orderId]
+);
+
     const dbResult = await query('SELECT finish_order($1, $2) AS result', [driverId, orderId]);
     const response = dbResult.rows[0].result;
 
@@ -2278,6 +2311,21 @@ const finishOrderForDriver = async (req, res) => {
         message: response?.message || 'Failed to finish order'
       });
     }
+
+    const custId = finishCustRow.rows[0]?.customer_id;
+    const suppId = finishCustRow.rows[0]?.supplier_id;
+
+    const quantity = finishCustRow.rows[0]?.requested_capacity;
+const price = finishCustRow.rows[0]?.accepted_price;
+
+if (custId) {
+  emitToUser(custId, 'order_updated', { order_id: orderId });
+  emitToUser(custId, 'order_completed', { order_id: orderId, quantity, price });
+}
+if (suppId) {
+  emitToUser(suppId, 'order_updated', { order_id: orderId });
+  emitToUser(suppId, 'order_completed', { order_id: orderId, quantity, price });
+}
 
     return res.status(200).json({
       success: true,
@@ -2334,7 +2382,7 @@ const cancelOrderCustomer = async (req, res) => {
 
     // Enforce allowed states for customer cancellation
     const allowedStates = ['open', 'supplier_timer', 'accepted', 'ride_started', 'reached'];
-    const orderResult = await query('SELECT status FROM orders WHERE order_id = $1 AND customer_id = $2', [orderId, customerId]);
+    const orderResult = await query('SELECT status, supplier_id, driver_id FROM orders WHERE order_id = $1 AND customer_id = $2', [orderId, customerId]);
     const order = orderResult.rows[0];
     if (!order) {
       return res.status(404).json({
@@ -2360,6 +2408,28 @@ const cancelOrderCustomer = async (req, res) => {
         message: response?.message || 'Failed to cancel order'
       });
     }
+
+    if (order.supplier_id) {
+  emitToUser(order.supplier_id, 'order_updated', { order_id: orderId });
+  emitToUser(order.supplier_id, 'order_cancelled', { order_id: orderId, cancelled_by: 'customer' });
+}
+if (order.driver_id) {
+  emitToUser(order.driver_id, 'order_updated', { order_id: orderId });
+  emitToUser(order.driver_id, 'order_cancelled', { order_id: orderId, cancelled_by: 'customer' });
+}
+// Also notify driver sitting in driver_assignment during supplier_timer
+if (order.status === 'supplier_timer') {
+  const assignedDriverResult = await query(
+  `SELECT driver_id FROM driver_assignment 
+   WHERE order_id = $1 AND COALESCE(order_rejected, FALSE) = FALSE`,
+  [orderId]
+);
+  const assignedDriverId = assignedDriverResult.rows[0]?.driver_id;
+  if (assignedDriverId && assignedDriverId !== order.driver_id) {
+    emitToUser(assignedDriverId, 'order_cancelled', { order_id: orderId, cancelled_by: 'customer' });
+  }
+}
+if (order.status === 'open') emitToSuppliers('market_updated', { order_id: orderId });
 
     return res.status(200).json({
       success: true,
@@ -2412,7 +2482,7 @@ const cancelOrderSupplier = async (req, res) => {
 
     // Enforce allowed states for supplier cancellation
     const allowedStates = ['supplier_timer', 'accepted', 'ride_started', 'reached'];
-    const orderResult = await query('SELECT status, supplier_id FROM orders WHERE order_id = $1', [orderId]);
+    const orderResult = await query('SELECT status, supplier_id, customer_id, driver_id FROM orders WHERE order_id = $1', [orderId]);
     const order = orderResult.rows[0];
     if (!order || order.supplier_id !== supplierId) {
       return res.status(404).json({
@@ -2438,6 +2508,24 @@ const cancelOrderSupplier = async (req, res) => {
         message: response?.message || 'Failed to cancel order'
       });
     }
+
+    emitToUser(order.customer_id, 'order_updated', { order_id: orderId });
+if (order.driver_id) emitToUser(order.driver_id, 'order_updated', { order_id: orderId });
+
+emitToUser(order.customer_id, 'order_cancelled', { order_id: orderId, cancelled_by: 'supplier' });
+if (order.driver_id) emitToUser(order.driver_id, 'order_cancelled', { order_id: orderId, cancelled_by: 'supplier' });
+// Also notify driver sitting in driver_assignment during supplier_timer
+if (order.status === 'supplier_timer') {
+  const assignedDriverResult = await query(
+    `SELECT driver_id FROM driver_assignment 
+     WHERE order_id = $1 AND order_rejected = FALSE`,
+    [orderId]
+  );
+  const assignedDriverId = assignedDriverResult.rows[0]?.driver_id;
+  if (assignedDriverId && assignedDriverId !== order.driver_id) {
+    emitToUser(assignedDriverId, 'order_cancelled', { order_id: orderId, cancelled_by: 'supplier' });
+  }
+}
 
     return res.status(200).json({
       success: true,
@@ -2490,7 +2578,7 @@ const cancelOrderDriver = async (req, res) => {
 
     // Enforce allowed states for driver cancellation
     const allowedStates = ['accepted', 'ride_started', 'reached'];
-    const orderResult = await query('SELECT status, driver_id FROM orders WHERE order_id = $1', [orderId]);
+    const orderResult = await query('SELECT status, driver_id, customer_id, supplier_id FROM orders WHERE order_id = $1', [orderId]);
     const order = orderResult.rows[0];
     if (!order || order.driver_id !== driverId) {
       return res.status(404).json({
@@ -2516,6 +2604,12 @@ const cancelOrderDriver = async (req, res) => {
         message: response?.message || 'Failed to cancel order'
       });
     }
+
+    emitToUser(order.customer_id, 'order_updated', { order_id: orderId });
+    if (order.supplier_id) emitToUser(order.supplier_id, 'order_updated', { order_id: orderId });
+
+    emitToUser(order.customer_id, 'order_cancelled', { order_id: orderId, cancelled_by: 'driver' });
+    if (order.supplier_id) emitToUser(order.supplier_id, 'order_cancelled', { order_id: orderId, cancelled_by: 'driver' });
 
     return res.status(200).json({
       success: true,
