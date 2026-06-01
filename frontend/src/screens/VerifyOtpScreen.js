@@ -98,7 +98,7 @@ export default function VerifyOtpScreen({ route, navigation }) {
     return (
         <View style={styles.screen}>
             <View style={styles.card}>
-                <Text style={styles.appName}>Tanker Delivery</Text>
+                <Text style={styles.appName}>Pani Chahye</Text>
                 <Text style={styles.title}>Verify OTP</Text>
                 <Text style={styles.subtitle}>Code sent to {phone}</Text>
 

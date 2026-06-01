@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, Alert, ScrollView, StyleSheet, ActivityIndicator, Modal } from 'react-native';
+import { View, Text, TextInput, ScrollView, StyleSheet, ActivityIndicator, Modal } from 'react-native';
 import { colors, spacing, radius, typography, shadow } from '../../theme/tokens';
 import BasicButton from '../../components/ui/BasicButton';
+import ErrorModal from '../../components/ui/ErrorModal';
 import {
     listAvailableOrders,
     placeSupplierBid,
@@ -61,6 +62,7 @@ export default function SupplierDashboard({ sessionToken, socket }) {
     const [completedModalData, setCompletedModalData] = useState(null);
     const [pendingSupplierTimerOrder, setPendingSupplierTimerOrder] = useState(null);
     const [showSupplierTimerNotificationModal, setShowSupplierTimerNotificationModal] = useState(false);
+    const [errorModalData, setErrorModalData] = useState(null);
 
     // Track which supplier_timer orders we've already shown notification for
     const notifiedOrdersRef = useRef(new Set());
@@ -98,7 +100,7 @@ export default function SupplierDashboard({ sessionToken, socket }) {
             const response = await listAvailableOrders(sessionToken);
             setMarketOrders(Array.isArray(response?.data?.orders) ? response.data.orders : []);
         } catch (error) {
-            Alert.alert('Error', error.message || 'Failed to fetch live market orders');
+            setErrorModalData({ title: 'Error', message: error.message || 'Failed to fetch live market orders' });
         } finally {
             setLoadingMarket(false);
         }
@@ -111,7 +113,7 @@ export default function SupplierDashboard({ sessionToken, socket }) {
             const response = await listActiveSupplierOrders(sessionToken);
             setActiveOrders(Array.isArray(response?.data?.orders) ? response.data.orders : []);
         } catch (error) {
-            Alert.alert('Error', error.message || 'Failed to fetch active orders');
+            setErrorModalData({ title: 'Error', message: error.message || 'Failed to fetch active orders' });
         } finally {
             setLoadingOrders(false);
         }
@@ -123,7 +125,7 @@ export default function SupplierDashboard({ sessionToken, socket }) {
             const response = await getPastSupplierOrderDetail(sessionToken, orderId);
             setPastOrderDetail(response?.data || null);
         } catch (error) {
-            Alert.alert('Error', error.message || 'Failed to fetch order details');
+            setErrorModalData({ title: 'Error', message: error.message || 'Failed to fetch order details' });
         }
     }, [sessionToken]);
 
@@ -134,7 +136,7 @@ export default function SupplierDashboard({ sessionToken, socket }) {
             const response = await listSupplierPastOrders(sessionToken);
             setPastOrders(Array.isArray(response?.data?.orders) ? response.data.orders : []);
         } catch (error) {
-            Alert.alert('Error', error.message || 'Failed to fetch past orders');
+            setErrorModalData({ title: 'Error', message: error.message || 'Failed to fetch past orders' });
         } finally {
             setLoadingOrders(false);
         }
@@ -147,7 +149,7 @@ export default function SupplierDashboard({ sessionToken, socket }) {
             const response = await listSupplierDrivers(sessionToken);
             setDrivers(Array.isArray(response?.data?.drivers) ? response.data.drivers : []);
         } catch (error) {
-            Alert.alert('Error', error.message || 'Failed to fetch drivers');
+            setErrorModalData({ title: 'Error', message: error.message || 'Failed to fetch drivers' });
         } finally {
             setLoadingDrivers(false);
         }
@@ -165,7 +167,7 @@ export default function SupplierDashboard({ sessionToken, socket }) {
                 setOrderDetail(null);
                 setSelectedOrderId(null);
                 setAssignableDrivers([]);
-                Alert.alert('Timer Expired', 'The supplier timer has expired. The order has been cancelled.');
+                setErrorModalData({ title: 'Timer Expired', message: 'The supplier timer has expired. The order has been cancelled.' });
                 await fetchActiveOrders();
             } else if (error.status === 404 || error.status === 409) {
                 setOrderDetail(null);
@@ -204,10 +206,7 @@ export default function SupplierDashboard({ sessionToken, socket }) {
             setMarketOrderDetail(response?.data || null);
         } catch (error) {
             // 403 means no available drivers — surface this clearly
-            Alert.alert(
-                'Cannot View Order',
-                error.message || 'Failed to load order details'
-            );
+            setErrorModalData({ title: 'Cannot View Order', message: error.message || 'Failed to load order details' });
         } finally {
             setLoadingMarketDetail(false);
         }
@@ -225,40 +224,41 @@ export default function SupplierDashboard({ sessionToken, socket }) {
         if (!sessionToken || !selectedOrderId) return;
         try {
             await assignDriverToOrder(sessionToken, selectedOrderId, driverId);
-            Alert.alert('Success', 'Driver assigned successfully');
+            setErrorModalData({ title: 'Success', message: 'Driver assigned successfully' });
             await fetchOrderDetail(selectedOrderId);
             await fetchAssignableDrivers(selectedOrderId);
             await fetchActiveOrders();
         } catch (error) {
-            Alert.alert('Error', error.message || 'Failed to assign driver');
+            setErrorModalData({ title: 'Error', message: error.message || 'Failed to assign driver' });
         }
     };
 
     const handleCancelSupplierOrder = async () => {
         if (!sessionToken || !selectedOrderId) return;
-        Alert.alert(
-            'Cancel Order',
-            'Are you sure you want to cancel this order?',
-            [
-                { text: 'No', style: 'cancel' },
+        setErrorModalData({
+            title: 'Cancel Order',
+            message: 'Are you sure you want to cancel this order?',
+            buttons: [
+                { label: 'No', onPress: () => setErrorModalData(null) },
                 {
-                    text: 'Yes, Cancel',
-                    style: 'destructive',
+                    label: 'Yes, Cancel',
+                    danger: true,
                     onPress: async () => {
+                        setErrorModalData(null);
                         try {
                             await cancelSupplierOrder(sessionToken, selectedOrderId);
                             setSelectedOrderId(null);
                             setOrderDetail(null);
                             setAssignableDrivers([]);
-                            Alert.alert('Cancelled', 'Order has been cancelled.');
+                            setErrorModalData({ title: 'Cancelled', message: 'Order has been cancelled.' });
                             await fetchActiveOrders();
                         } catch (error) {
-                            Alert.alert('Error', error.message || 'Failed to cancel order');
+                            setErrorModalData({ title: 'Error', message: error.message || 'Failed to cancel order' });
                         }
                     }
                 }
             ]
-        );
+        });
     };
 
     // Helper: Find the next unnotified supplier_timer order
@@ -314,7 +314,7 @@ export default function SupplierDashboard({ sessionToken, socket }) {
 
     const handleSendBid = async (orderId) => {
         if (!sessionToken) {
-            Alert.alert('Error', 'Missing session token. Please login again.');
+            setErrorModalData({ title: 'Error', message: 'Missing session token. Please login again.' });
             return;
         }
 
@@ -322,30 +322,30 @@ export default function SupplierDashboard({ sessionToken, socket }) {
         const bidPrice = Number(bidPriceRaw);
 
         if (!bidPriceRaw || !Number.isFinite(bidPrice) || bidPrice <= 0) {
-            Alert.alert('Error', 'Enter a valid bid price');
+            setErrorModalData({ title: 'Error', message: 'Enter a valid bid price' });
             return;
         }
 
         try {
             await placeSupplierBid(sessionToken, Number(orderId), bidPrice);
-            Alert.alert('Success', 'Bid placed successfully');
+            setErrorModalData({ title: 'Success', message: 'Bid placed successfully' });
             setBids((prev) => ({ ...prev, [orderId]: '' }));
             setMarketOrderDetail(null);
             fetchLiveMarket();
         } catch (error) {
-            Alert.alert('Error', error.message || 'Failed to place bid');
+            setErrorModalData({ title: 'Error', message: error.message || 'Failed to place bid' });
         }
     };
 
     const handleAddDriver = async () => {
         if (!sessionToken) {
-            Alert.alert('Error', 'Missing session token. Please login again.');
+            setErrorModalData({ title: 'Error', message: 'Missing session token. Please login again.' });
             return;
         }
 
         const phone = newDriverPhone.trim();
         if (!phone) {
-            Alert.alert('Error', 'Driver phone is required');
+            setErrorModalData({ title: 'Error', message: 'Driver phone is required' });
             return;
         }
 
@@ -353,15 +353,15 @@ export default function SupplierDashboard({ sessionToken, socket }) {
             await addSupplierDriver(sessionToken, phone);
             setNewDriverPhone('');
             fetchDrivers();
-            Alert.alert('Success', 'Driver added successfully');
+            setErrorModalData({ title: 'Success', message: 'Driver added successfully' });
         } catch (error) {
-            Alert.alert('Error', error.message || 'Failed to add driver');
+            setErrorModalData({ title: 'Error', message: error.message || 'Failed to add driver' });
         }
     };
 
     const handleRemoveDriver = async (driverPhoneNum) => {
         if (!sessionToken) {
-            Alert.alert('Error', 'Missing session token. Please login again.');
+            setErrorModalData({ title: 'Error', message: 'Missing session token. Please login again.' });
             return;
         }
 
@@ -372,9 +372,9 @@ export default function SupplierDashboard({ sessionToken, socket }) {
             } catch (refreshError) {
                 console.warn('Failed to refresh driver list:', refreshError);
             }
-            Alert.alert('Success', 'Driver removed successfully');
+            setErrorModalData({ title: 'Success', message: 'Driver removed successfully' });
         } catch (error) {
-            Alert.alert('Error', error.message || 'Failed to remove driver');
+            setErrorModalData({ title: 'Error', message: error.message || 'Failed to remove driver' });
         }
     };
 
@@ -453,13 +453,13 @@ export default function SupplierDashboard({ sessionToken, socket }) {
 
     // Show notification modal when a new supplier_timer order arrives
     useEffect(() => {
-    const nextOrder = getNextUnnotifiedSupplierTimerOrder();
-    if (!nextOrder) return;
-    if (showSupplierTimerNotificationModal) return; // modal already open, chaining handles it
-    const orderId = nextOrder.order_id || nextOrder.id;
-    notifiedOrdersRef.current.add(orderId);
-    setPendingSupplierTimerOrder(nextOrder);
-    setShowSupplierTimerNotificationModal(true);
+        const nextOrder = getNextUnnotifiedSupplierTimerOrder();
+        if (!nextOrder) return;
+        if (showSupplierTimerNotificationModal) return; // modal already open, chaining handles it
+        const orderId = nextOrder.order_id || nextOrder.id;
+        notifiedOrdersRef.current.add(orderId);
+        setPendingSupplierTimerOrder(nextOrder);
+        setShowSupplierTimerNotificationModal(true);
     }, [activeOrders]);
 
     // Reset timerTick each time we get fresh order detail from the server
@@ -685,6 +685,15 @@ export default function SupplierDashboard({ sessionToken, socket }) {
 
     return (
         <View style={styles.container}>
+            {/* App-styled alert/error modal */}
+            <ErrorModal
+                visible={errorModalData !== null}
+                title={errorModalData?.title}
+                message={errorModalData?.message}
+                buttons={errorModalData?.buttons}
+                onDismiss={() => setErrorModalData(null)}
+            />
+
             {/* Supplier Timer Notification Modal */}
             <Modal
                 visible={showSupplierTimerNotificationModal}

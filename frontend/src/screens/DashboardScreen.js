@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Alert, BackHandler, StyleSheet } from 'react-native';
+import { View, Text, BackHandler, StyleSheet } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { io } from 'socket.io-client';
 import { colors, spacing, radius, typography } from '../theme/tokens';
@@ -9,10 +9,12 @@ import SupplierDashboard from './dashboard/SupplierDashboard';
 import DriverDashboard from './dashboard/DriverDashboard';
 import BasicButton from '../components/ui/BasicButton';
 import { logoutCustomer, logoutSupplier, logoutDriver } from '../api/authApi';
+import ErrorModal from '../components/ui/ErrorModal';
 
 export default function DashboardScreen({ route, navigation }) {
     const { phone, role, sessionToken } = route.params || { phone: 'Unknown', role: 'undefined', sessionToken: '' };
     const [loggingOut, setLoggingOut] = useState(false);
+    const [errorModalData, setErrorModalData] = useState(null);
     const backPressedOnceRef = useRef(false);
 
     useEffect(() => {
@@ -22,7 +24,7 @@ export default function DashboardScreen({ route, navigation }) {
                 return true;
             }
             backPressedOnceRef.current = true;
-            Alert.alert('Exit', 'Press back again to exit the app.');
+            setErrorModalData({ title: 'Exit', message: 'Press back again to exit the app.' });
             setTimeout(() => { backPressedOnceRef.current = false; }, 2000);
             return true;
         };
@@ -55,12 +57,12 @@ export default function DashboardScreen({ route, navigation }) {
         const logoutFn = logoutByRole[role];
 
         if (!logoutFn) {
-            Alert.alert('Error', `Unknown role: ${role}`);
+            setErrorModalData({ title: 'Error', message: `Unknown role: ${role}` });
             return;
         }
 
         if (!sessionToken) {
-            Alert.alert('Error', 'Missing session token. Please login again.');
+            setErrorModalData({ title: 'Error', message: 'Missing session token. Please login again.' });
             return;
         }
 
@@ -70,7 +72,7 @@ export default function DashboardScreen({ route, navigation }) {
             await AsyncStorage.multiRemove(['session_token', 'session_phone']);
             navigation.reset({ index: 0, routes: [{ name: 'EnterPhone' }] });
         } catch (error) {
-            Alert.alert('Logout Failed', error.message || 'Failed to logout');
+            setErrorModalData({ title: 'Logout Failed', message: error.message || 'Failed to logout' });
         } finally {
             setLoggingOut(false);
         }
@@ -80,6 +82,13 @@ export default function DashboardScreen({ route, navigation }) {
 
     return (
         <View style={styles.container}>
+            <ErrorModal
+                visible={errorModalData !== null}
+                title={errorModalData?.title}
+                message={errorModalData?.message}
+                buttons={errorModalData?.buttons}
+                onDismiss={() => setErrorModalData(null)}
+            />
             <View style={styles.header}>
                 <View>
                     <Text style={styles.roleText}>{roleLabel}</Text>

@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { ActivityIndicator, Text, View, TextInput, StyleSheet, ScrollView } from 'react-native';
-import { Picker } from '@react-native-picker/picker';
 import { submitCustomerDetails, submitDriverDetails, submitSupplierDetails } from '../api/authApi';
 import BasicButton from '../components/ui/BasicButton';
+import AppDropdown from '../components/ui/AppDropdown';
 import { colors, spacing, radius, typography, shadow } from '../theme/tokens';
 
 function getErrorMessage(error) {
@@ -61,20 +61,23 @@ export default function EnterDetailsScreen({ route, navigation }) {
         <View style={styles.screen}>
             <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
                 <View style={styles.card}>
-                    <Text style={styles.appName}>Tanker Delivery</Text>
+                    <Text style={styles.appName}>Pani Chahye</Text>
                     <Text style={styles.title}>Create Account</Text>
                     <Text style={styles.subtitle}>Choose your role and fill in your details</Text>
 
                     {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
 
-                    <Text style={styles.fieldLabel}>Role</Text>
-                    <View style={styles.pickerWrapper}>
-                        <Picker selectedValue={selectedRole} onValueChange={setSelectedRole}>
-                            <Picker.Item label="Customer" value="customer" />
-                            <Picker.Item label="Supplier" value="supplier" />
-                            <Picker.Item label="Driver" value="driver" />
-                        </Picker>
-                    </View>
+                    <AppDropdown
+                        label="Role"
+                        selectedValue={selectedRole}
+                        onValueChange={setSelectedRole}
+                        placeholder="Select your role"
+                        options={[
+                            { label: 'Customer', value: 'customer' },
+                            { label: 'Supplier', value: 'supplier' },
+                            { label: 'Driver', value: 'driver' },
+                        ]}
+                    />
 
                     <Text style={styles.fieldLabel}>Full Name</Text>
                     <TextInput
@@ -199,13 +202,6 @@ const styles = StyleSheet.create({
         fontSize: typography.body,
         color: colors.textPrimary,
         backgroundColor: colors.surface,
-    },
-    pickerWrapper: {
-        borderWidth: 1.5,
-        borderColor: colors.border,
-        borderRadius: radius.sm,
-        backgroundColor: colors.surface,
-        overflow: 'hidden',
     },
     button: {
         marginTop: spacing.md,

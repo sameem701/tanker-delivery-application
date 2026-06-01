@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Alert, ScrollView, StyleSheet, Modal, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, Modal, ActivityIndicator } from 'react-native';
 import { colors, spacing, radius, typography, shadow } from '../../theme/tokens';
 import BasicButton from '../../components/ui/BasicButton';
+import ErrorModal from '../../components/ui/ErrorModal';
 import Toast from '../../components/ui/Toast';
 
 import {
@@ -35,7 +36,7 @@ function formatSeconds(secs) {
 
 export default function DriverDashboard({ sessionToken, socket }) {
   const [activeTab, setActiveTab] = useState('task'); // task | history
-  const [currentOrder, setCurrentOrder] = useState(null); // full order data + source + timers
+  const [currentOrder, setCurrentOrder] = useState(null);
   const [taskMessage, setTaskMessage] = useState('');
   const [loadingTask, setLoadingTask] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -43,15 +44,17 @@ export default function DriverDashboard({ sessionToken, socket }) {
   // Local countdown tick applied on top of server-provided remaining seconds
   const [supplierTimerTick, setSupplierTimerTick] = useState(0);
   const [driverTimerTick, setDriverTimerTick] = useState(0);
-  const [cancelledModalData, setCancelledModalData] = useState(null);
 
+  // Custom modal states (replacing Alert.alert)
+  const [cancelledModalData, setCancelledModalData] = useState(null);
+  const [errorModalData, setErrorModalData] = useState(null);
+
+  // Receipt shown after finishing a delivery
+  const [receiptOrder, setReceiptOrder] = useState(null);
 
   const [historyOrders, setHistoryOrders] = useState([]);
   const [historyDetails, setHistoryDetails] = useState(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
-
-  // Receipt shown after finishing a delivery
-  const [receiptOrder, setReceiptOrder] = useState(null);
 
   // Load (or refresh) the driver's current order via getCurrentDriverOrder
   const loadCurrentOrder = useCallback(async () => {
@@ -136,7 +139,7 @@ export default function DriverDashboard({ sessionToken, socket }) {
       const response = await listDriverHistory(sessionToken);
       setHistoryOrders(Array.isArray(response?.data?.orders) ? response.data.orders : []);
     } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to load history');
+      setErrorModalData({ title: 'Error', message: error.message || 'Failed to load history' });
     } finally {
       setLoadingHistory(false);
     }
@@ -144,54 +147,56 @@ export default function DriverDashboard({ sessionToken, socket }) {
 
   const handleAccept = () => {
     if (!sessionToken || !currentOrder?.order_id) return;
-    Alert.alert(
-      'Accept Order',
-      'Are you sure you want to accept this order?',
-      [
-        { text: 'Cancel', style: 'cancel' },
+    setErrorModalData({
+      title: 'Accept Order',
+      message: 'Are you sure you want to accept this order?',
+      buttons: [
+        { label: 'Cancel', onPress: () => setErrorModalData(null) },
         {
-          text: 'Confirm',
+          label: 'Confirm',
           onPress: async () => {
+            setErrorModalData(null);
             try {
               setActionLoading(true);
               await acceptDriverOrder(sessionToken, currentOrder.order_id);
               await loadCurrentOrder();
             } catch (error) {
-              Alert.alert('Error', error.message || 'Failed to accept order');
+              setErrorModalData({ title: 'Error', message: error.message || 'Failed to accept order' });
             } finally {
               setActionLoading(false);
             }
           },
         },
-      ]
-    );
+      ],
+    });
   };
 
   const handleReject = () => {
     if (!sessionToken || !currentOrder?.order_id) return;
-    Alert.alert(
-      'Reject Order',
-      'Are you sure you want to reject this order? You will not be able to accept it again.',
-      [
-        { text: 'Cancel', style: 'cancel' },
+    setErrorModalData({
+      title: 'Reject Order',
+      message: 'Are you sure you want to reject this order? You will not be able to accept it again.',
+      buttons: [
+        { label: 'Cancel', onPress: () => setErrorModalData(null) },
         {
-          text: 'Confirm',
-          style: 'destructive',
+          label: 'Confirm',
+          danger: true,
           onPress: async () => {
+            setErrorModalData(null);
             try {
               setActionLoading(true);
               await rejectDriverOrder(sessionToken, currentOrder.order_id);
               setCurrentOrder(null);
               setTaskMessage('Order rejected. Waiting for new assignment.');
             } catch (error) {
-              Alert.alert('Error', error.message || 'Failed to reject order');
+              setErrorModalData({ title: 'Error', message: error.message || 'Failed to reject order' });
             } finally {
               setActionLoading(false);
             }
           },
         },
-      ]
-    );
+      ],
+    });
   };
 
   const runDriverAction = async (actionFn) => {
@@ -201,7 +206,7 @@ export default function DriverDashboard({ sessionToken, socket }) {
       await actionFn(sessionToken, currentOrder.order_id);
       await loadCurrentOrder();
     } catch (error) {
-      Alert.alert('Error', error.message || 'Action failed');
+      setErrorModalData({ title: 'Error', message: error.message || 'Action failed' });
     } finally {
       setActionLoading(false);
     }
@@ -217,7 +222,7 @@ export default function DriverDashboard({ sessionToken, socket }) {
       setTaskMessage('');
       setReceiptOrder(snapshot);
     } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to finish delivery');
+      setErrorModalData({ title: 'Error', message: error.message || 'Failed to finish delivery' });
     } finally {
       setActionLoading(false);
     }
@@ -231,7 +236,7 @@ export default function DriverDashboard({ sessionToken, socket }) {
       setCurrentOrder(null);
       setTaskMessage('Order cancelled.');
     } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to cancel order');
+      setErrorModalData({ title: 'Error', message: error.message || 'Failed to cancel order' });
     } finally {
       setActionLoading(false);
     }
@@ -243,7 +248,7 @@ export default function DriverDashboard({ sessionToken, socket }) {
       const response = await getDriverHistoryDetails(sessionToken, orderId);
       setHistoryDetails(response?.data || null);
     } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to fetch order details');
+      setErrorModalData({ title: 'Error', message: error.message || 'Failed to fetch order details' });
     }
   };
 
@@ -265,6 +270,15 @@ export default function DriverDashboard({ sessionToken, socket }) {
 
   return (
     <View style={styles.container}>
+      {/* App-styled error/confirm modal */}
+      <ErrorModal
+        visible={errorModalData !== null}
+        title={errorModalData?.title}
+        message={errorModalData?.message}
+        buttons={errorModalData?.buttons}
+        onDismiss={() => setErrorModalData(null)}
+      />
+
       {/* Delivery receipt modal */}
       <Modal
         visible={receiptOrder !== null}
@@ -293,7 +307,7 @@ export default function DriverDashboard({ sessionToken, socket }) {
         </View>
       </Modal>
 
-      {/* Cancellation Modal */}
+      {/* Order cancelled modal */}
       <Modal
         visible={cancelledModalData !== null}
         transparent
@@ -315,6 +329,7 @@ export default function DriverDashboard({ sessionToken, socket }) {
           </View>
         </View>
       </Modal>
+
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         <View style={styles.topTabsRow}>
           <BasicButton title="Task" selected={activeTab === 'task'} onPress={() => setActiveTab('task')} style={styles.tabButton} />
@@ -370,15 +385,15 @@ export default function DriverDashboard({ sessionToken, socket }) {
                 {currentOrder.status === 'supplier_timer' && currentOrder.source === 'pending_assignment' && (
                   <View style={styles.card}>
                     {supplierSecs != null && (
-                      <Text>Order timer: {supplierTimerExpired ? 'Expired' : formatSeconds(supplierSecs)}</Text>
+                      <Text style={styles.cardRow}>Order timer: {supplierTimerExpired ? 'Expired' : formatSeconds(supplierSecs)}</Text>
                     )}
                     {driverSecs != null && (
-                      <Text>Your response timer: {driverTimerExpired ? 'Expired' : formatSeconds(driverSecs)}</Text>
+                      <Text style={styles.cardRow}>Your response timer: {driverTimerExpired ? 'Expired' : formatSeconds(driverSecs)}</Text>
                     )}
                     {supplierTimerExpired ? (
-                      <Text>This order has expired. Waiting for a new assignment.</Text>
+                      <Text style={styles.hintText}>This order has expired. Waiting for a new assignment.</Text>
                     ) : driverTimerExpired ? (
-                      <Text>Your response time has expired. Waiting for new assignment.</Text>
+                      <Text style={styles.hintText}>Your response time has expired. Waiting for new assignment.</Text>
                     ) : (
                       <View style={styles.actionRow}>
                         <BasicButton title={actionLoading ? 'Accepting...' : 'Accept'} onPress={handleAccept} disabled={actionLoading} style={styles.actionButton} />
@@ -437,8 +452,8 @@ export default function DriverDashboard({ sessionToken, socket }) {
                   <Text style={styles.sectionTitle}>Past Orders</Text>
                   <BasicButton title="Refresh" onPress={fetchHistory} style={styles.inlineButton} />
                 </View>
-                {loadingHistory ? <Text>Loading history...</Text> : null}
-                {historyOrders.length === 0 ? <Text>No past orders.</Text> : null}
+                {loadingHistory ? <Text style={styles.hintText}>Loading history...</Text> : null}
+                {historyOrders.length === 0 && !loadingHistory ? <Text style={styles.emptyText}>No past orders.</Text> : null}
                 {historyOrders.map((item) => (
                   <View key={String(item.order_id || item.id)} style={styles.card}>
                     <Text style={styles.cardTitle}>Order #{item.order_id || item.id}</Text>
@@ -461,31 +476,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
     alignItems: 'center',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: colors.overlay,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalBox: {
-    width: '88%',
-    maxWidth: 380,
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    padding: spacing.lg,
-    ...shadow.md,
-  },
-  modalTitle: {
-    fontSize: typography.subtitle,
-    fontWeight: '700',
-    color: colors.textPrimary,
-    marginBottom: spacing.sm,
-  },
-  modalSubtitle: {
-    fontSize: typography.body,
-    color: colors.textSecondary,
-    marginBottom: spacing.md,
   },
   scroll: {
     alignSelf: 'stretch',
@@ -520,6 +510,21 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     marginTop: spacing.xs,
     ...shadow.sm,
+  },
+  cardTitle: {
+    fontSize: typography.body,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: 4,
+  },
+  cardRow: {
+    fontSize: typography.label,
+    color: colors.textPrimary,
+    marginBottom: 2,
+  },
+  cardLabel: {
+    color: colors.textSecondary,
+    fontWeight: '600',
   },
   actionRow: {
     flexDirection: 'row',
@@ -576,6 +581,7 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: typography.body,
   },
+  // Modal styles
   modalOverlay: {
     flex: 1,
     backgroundColor: colors.overlay,
@@ -608,22 +614,9 @@ const styles = StyleSheet.create({
   },
   receiptLabel: {
     color: colors.textSecondary,
+    fontWeight: '600',
   },
   okButton: {
     marginTop: 0,
-  },
-  cardTitle: {
-    fontSize: typography.body,
-    fontWeight: '700',
-    color: colors.textPrimary,
-    marginBottom: 4,
-  },
-  cardRow: {
-    fontSize: typography.label,
-    color: colors.textSecondary,
-    marginBottom: 2,
-  },
-  cardLabel: {
-    color: colors.textSecondary,
   },
 });

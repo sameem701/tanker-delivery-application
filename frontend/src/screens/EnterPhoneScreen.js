@@ -50,7 +50,7 @@ export default function EnterPhoneScreen({ navigation }) {
     return (
         <View style={styles.screen}>
             <View style={styles.card}>
-                <Text style={styles.appName}>Tanker Delivery</Text>
+                <Text style={styles.appName}>Pani Chahye</Text>
                 <Text style={styles.title}>Sign In</Text>
                 <Text style={styles.subtitle}>Enter your phone number to continue</Text>
 

@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, TextInput, Alert, ScrollView, Modal, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, Text, TextInput, ScrollView, Modal, ActivityIndicator, StyleSheet } from 'react-native';
 import { colors, spacing, radius, typography, shadow } from '../../theme/tokens';
-import { Picker } from '@react-native-picker/picker';
 import Toast from '../../components/ui/Toast';
+import AppDropdown from '../../components/ui/AppDropdown';
+import ErrorModal from '../../components/ui/ErrorModal';
 
 import {
   getCustomerQuantityPricing,
@@ -74,10 +75,12 @@ export default function CustomerDashboard({ sessionToken, socket }) {
   const [timerTick, setTimerTick] = useState(0);
 
   const [address, setAddress] = useState('');
-  const [district, setDistrict] = useState(KARACHI_AREAS[0]);
-  const [gallons, setGallons] = useState('1000');
+  const [district, setDistrict] = useState('');
+  const [gallons, setGallons] = useState('');
   const [price, setPrice] = useState('');
   const [cancelledModalData, setCancelledModalData] = useState(null);
+
+  const [errorModalData, setErrorModalData] = useState(null);
 
   const [activeTab, setActiveTab] = useState('order');
   const [historyOrders, setHistoryOrders] = useState([]);
@@ -226,13 +229,14 @@ export default function CustomerDashboard({ sessionToken, socket }) {
             base_price: Number(item.base_price)
           }));
           setQuantityPricing(normalized);
-          setGallons(String(normalized[0].quantity_in_gallon));
-          setPrice(String(normalized[0].base_price));
+          // Set to empty string so placeholder is shown initially
+          setGallons('');
+          setPrice('');
         }
       } catch (error) {
         console.log('Quantity pricing fetch failed, using fallback:', error.message);
-        setGallons(String(FALLBACK_QUANTITY_PRICING[0].quantity_in_gallon));
-        setPrice(String(FALLBACK_QUANTITY_PRICING[0].base_price));
+        setGallons('');
+        setPrice('');
       } finally {
         setLoadingPricing(false);
       }
@@ -303,16 +307,16 @@ export default function CustomerDashboard({ sessionToken, socket }) {
   }, [sessionToken, activeOrder?.id, activeOrder?.status, loadCurrentOrder, socket]);
 
   const handleStartOrder = async () => {
-    if (!sessionToken) { Alert.alert('Error', 'Missing session token. Please login again.'); return; }
-    if (!address.trim()) { Alert.alert('Error', 'Address is required'); return; }
-    if (!district) { Alert.alert('Error', 'Please select a district'); return; }
-    if (!gallons) { Alert.alert('Error', 'Please select gallons from allowed values'); return; }
-    if (!price || Number.isNaN(Number(price))) { Alert.alert('Error', 'Please enter a valid price'); return; }
+    if (!sessionToken) { setErrorModalData({ title: 'Error', message: 'Missing session token. Please login again.' }); return; }
+    if (!address.trim()) { setErrorModalData({ title: 'Error', message: 'Address is required' }); return; }
+    if (!district) { setErrorModalData({ title: 'Error', message: 'Please select a district' }); return; }
+    if (!gallons) { setErrorModalData({ title: 'Error', message: 'Please select gallons from allowed values' }); return; }
+    if (!price || Number.isNaN(Number(price))) { setErrorModalData({ title: 'Error', message: 'Please enter a valid price' }); return; }
 
     if (selectedOption && minPrice !== null && maxPrice !== null) {
       const numericPrice = Number(price);
-      if (numericPrice < minPrice) { Alert.alert('Error', `Price cannot be lower than ${minPrice}`); return; }
-      if (numericPrice > maxPrice) { Alert.alert('Error', `Price cannot be higher than ${maxPrice}`); return; }
+      if (numericPrice < minPrice) { setErrorModalData({ title: 'Error', message: `Price cannot be lower than ${minPrice}` }); return; }
+      if (numericPrice > maxPrice) { setErrorModalData({ title: 'Error', message: `Price cannot be higher than ${maxPrice}` }); return; }
     }
 
     try {
@@ -324,87 +328,88 @@ export default function CustomerDashboard({ sessionToken, socket }) {
       await loadCurrentOrder();
     } catch (error) {
       if (error.status === 409 && error?.payload?.data?.active_order_id) { await loadCurrentOrder(); return; }
-      Alert.alert('Error', error.message || 'Failed to start order');
+      setErrorModalData({ title: 'Error', message: error.message || 'Failed to start order' });
     }
   };
 
   const handleCancelOrder = async () => {
-  if (!sessionToken) { Alert.alert('Error', 'Missing session token. Please login again.'); return; }
-  const orderId = Number(activeOrder?.id);
-  if (!Number.isInteger(orderId) || orderId <= 0) { Alert.alert('Error', 'Invalid order ID.'); return; }
-  if (!CUSTOMER_CANCELABLE_STATUSES.includes(activeOrder?.status)) {
-    Alert.alert('Not Allowed', `Order cannot be cancelled in state: ${activeOrder?.status}`);
-    return;
-  }
+    if (!sessionToken) { setErrorModalData({ title: 'Error', message: 'Missing session token. Please login again.' }); return; }
+    const orderId = Number(activeOrder?.id);
+    if (!Number.isInteger(orderId) || orderId <= 0) { setErrorModalData({ title: 'Error', message: 'Invalid order ID.' }); return; }
+    if (!CUSTOMER_CANCELABLE_STATUSES.includes(activeOrder?.status)) {
+      setErrorModalData({ title: 'Not Allowed', message: `Order cannot be cancelled in state: ${activeOrder?.status}` });
+      return;
+    }
 
-  Alert.alert(
-    'Cancel Order',
-    'Are you sure you want to cancel this order?',
-    [
-      { text: 'No', style: 'cancel' },
-      {
-        text: 'Yes, Cancel',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await cancelCustomerOrder(sessionToken, orderId);
-            setActiveOrder(null);
-            setBids([]);
-            setBidUpdatePrice('');
-            Alert.alert('Success', 'Order cancelled successfully');
-          } catch (error) {
-            Alert.alert('Error', error.message || 'Failed to cancel order');
+    setErrorModalData({
+      title: 'Cancel Order',
+      message: 'Are you sure you want to cancel this order?',
+      buttons: [
+        { label: 'Keep Order', onPress: () => setErrorModalData(null) },
+        {
+          label: 'Cancel Order',
+          danger: true,
+          onPress: async () => {
+            setErrorModalData(null);
+            try {
+              await cancelCustomerOrder(sessionToken, orderId);
+              setActiveOrder(null);
+              setBids([]);
+              setBidUpdatePrice('');
+              setErrorModalData({ title: 'Success', message: 'Order cancelled successfully' });
+            } catch (error) {
+              setErrorModalData({ title: 'Error', message: error.message || 'Failed to cancel order' });
+            }
           }
         }
-      }
-    ]
-  );
-};
+      ]
+    });
+  };
 
   const handleUpdateBid = async () => {
-    if (!sessionToken) { Alert.alert('Error', 'Missing session token. Please login again.'); return; }
+    if (!sessionToken) { setErrorModalData({ title: 'Error', message: 'Missing session token. Please login again.' }); return; }
     const orderId = Number(activeOrder?.id);
     const newBid = Number(bidUpdatePrice);
     const currentBid = Number(activeOrder?.price);
-    if (!Number.isInteger(orderId) || orderId <= 0) { Alert.alert('Error', 'Invalid order ID.'); return; }
-    if (!Number.isFinite(newBid) || newBid <= 0) { Alert.alert('Error', 'Enter a valid customer bid price'); return; }
+    if (!Number.isInteger(orderId) || orderId <= 0) { setErrorModalData({ title: 'Error', message: 'Invalid order ID.' }); return; }
+    if (!Number.isFinite(newBid) || newBid <= 0) { setErrorModalData({ title: 'Error', message: 'Enter a valid customer bid price' }); return; }
     const increment = newBid - currentBid;
-    if (increment < 50) { Alert.alert('Error', 'Bid update must increase by at least 50'); return; }
-    if (increment % 50 !== 0) { Alert.alert('Error', 'Bid update must be in increments of 50'); return; }
+    if (increment < 50) { setErrorModalData({ title: 'Error', message: 'Bid update must increase by at least 50' }); return; }
+    if (increment % 50 !== 0) { setErrorModalData({ title: 'Error', message: 'Bid update must be in increments of 50' }); return; }
     try {
       const response = await updateCustomerOrderBid(sessionToken, orderId, newBid);
       const updatedPrice = response?.data?.customer_bid_price;
       setActiveOrder((prev) => ({ ...prev, price: String(updatedPrice || newBid) }));
       setBidUpdatePrice(String(updatedPrice || newBid));
       setBids([]);
-      Alert.alert('Success', 'Order bid updated successfully');
+      setErrorModalData({ title: 'Success', message: 'Order bid updated successfully' });
     } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to update bid');
+      setErrorModalData({ title: 'Error', message: error.message || 'Failed to update bid' });
     }
   };
 
   const handleAcceptBid = async (bidId, remainingSeconds) => {
-    if (!sessionToken) { Alert.alert('Error', 'Missing session token. Please login again.'); return; }
-    if (remainingSeconds <= 0) { Alert.alert('Expired', 'This bid has expired'); return; }
+    if (!sessionToken) { setErrorModalData({ title: 'Error', message: 'Missing session token. Please login again.' }); return; }
+    if (remainingSeconds <= 0) { setErrorModalData({ title: 'Expired', message: 'This bid has expired' }); return; }
     const orderId = Number(activeOrder?.id);
     try {
       await acceptCustomerBid(sessionToken, orderId, Number(bidId));
       await loadCurrentOrder();
       setBids([]);
-      Alert.alert('Success', 'Bid accepted successfully');
+      setErrorModalData({ title: 'Success', message: 'Bid accepted successfully' });
     } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to accept bid');
+      setErrorModalData({ title: 'Error', message: error.message || 'Failed to accept bid' });
     }
   };
 
   const handleRejectBid = async (bidId) => {
-    if (!sessionToken) { Alert.alert('Error', 'Missing session token. Please login again.'); return; }
+    if (!sessionToken) { setErrorModalData({ title: 'Error', message: 'Missing session token. Please login again.' }); return; }
     const orderId = Number(activeOrder?.id);
     try {
       await rejectCustomerBid(sessionToken, orderId, Number(bidId));
       setBids((prev) => prev.filter((item) => Number(item.bid_id) !== Number(bidId)));
     } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to reject bid');
+      setErrorModalData({ title: 'Error', message: error.message || 'Failed to reject bid' });
     }
   };
 
@@ -415,7 +420,7 @@ export default function CustomerDashboard({ sessionToken, socket }) {
       const response = await listCustomerHistory(sessionToken);
       setHistoryOrders(Array.isArray(response?.data?.orders) ? response.data.orders : []);
     } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to load history');
+      setErrorModalData({ title: 'Error', message: error.message || 'Failed to load history' });
     } finally {
       setLoadingHistory(false);
     }
@@ -428,7 +433,7 @@ export default function CustomerDashboard({ sessionToken, socket }) {
       setHistoryDetail({ order_id: orderId, ...(response?.data || {}) });
       setSelectedRating(null);
     } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to load order details');
+      setErrorModalData({ title: 'Error', message: error.message || 'Failed to load order details' });
     }
   };
 
@@ -438,9 +443,9 @@ export default function CustomerDashboard({ sessionToken, socket }) {
       setRatingSubmitting(true);
       await submitCustomerRating(sessionToken, historyDetail.order_id, selectedRating);
       setHistoryDetail((prev) => ({ ...prev, customer_rating: selectedRating }));
-      Alert.alert('Success', 'Rating submitted successfully');
+      setErrorModalData({ title: 'Success', message: 'Rating submitted successfully' });
     } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to submit rating');
+      setErrorModalData({ title: 'Error', message: error.message || 'Failed to submit rating' });
     } finally {
       setRatingSubmitting(false);
     }
@@ -465,9 +470,9 @@ export default function CustomerDashboard({ sessionToken, socket }) {
       setRatingPromptOrder(null);
       setPromptRating(null);
       setActiveOrder(null);
-      Alert.alert('Thank you!', 'Your rating has been submitted.');
+      setErrorModalData({ title: 'Thank you!', message: 'Your rating has been submitted.' });
     } catch (error) {
-      Alert.alert('Error', error.message || 'Failed to submit rating');
+      setErrorModalData({ title: 'Error', message: error.message || 'Failed to submit rating' });
     } finally {
       setPromptSubmitting(false);
     }
@@ -487,22 +492,22 @@ export default function CustomerDashboard({ sessionToken, socket }) {
 
 
   useEffect(() => {
-  if (!sessionToken || !socket) return;
+    if (!sessionToken || !socket) return;
 
-  const onOrderCancelled = ({ order_id, cancelled_by }) => {
-  setActiveOrder(null);
-  setBids([]);
-  setBidUpdatePrice('');
-  const who = cancelled_by === 'supplier' ? 'the supplier'
-    : cancelled_by === 'driver' ? 'the driver'
-    : cancelled_by === 'timer' ? 'timer expiry'
-    : cancelled_by;
-  setCancelledModalData({ order_id, who });
-};
+    const onOrderCancelled = ({ order_id, cancelled_by }) => {
+      setActiveOrder(null);
+      setBids([]);
+      setBidUpdatePrice('');
+      const who = cancelled_by === 'supplier' ? 'the supplier'
+        : cancelled_by === 'driver' ? 'the driver'
+          : cancelled_by === 'timer' ? 'timer expiry'
+            : cancelled_by;
+      setCancelledModalData({ order_id, who });
+    };
 
-  socket.on('order_cancelled', onOrderCancelled);
-  return () => socket.off('order_cancelled', onOrderCancelled);
-}, [sessionToken, socket]);
+    socket.on('order_cancelled', onOrderCancelled);
+    return () => socket.off('order_cancelled', onOrderCancelled);
+  }, [sessionToken, socket]);
 
   // visibleBids is recomputed on every render — timerTick causes a render every second,
   // so expired bids are filtered out automatically without a separate sweep interval.
@@ -522,6 +527,15 @@ export default function CustomerDashboard({ sessionToken, socket }) {
 
   return (
     <View style={styles.container}>
+      {/* Error/Success Modal */}
+      <ErrorModal
+        visible={errorModalData !== null}
+        title={errorModalData?.title}
+        message={errorModalData?.message}
+        buttons={errorModalData?.buttons}
+        onDismiss={() => setErrorModalData(null)}
+      />
+
       {/* Rating prompt modal */}
       <Modal
         visible={ratingPromptOrder !== null}
@@ -571,7 +585,7 @@ export default function CustomerDashboard({ sessionToken, socket }) {
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Order Cancelled</Text>
             <Text style={styles.modalSubtitle}>
-                Your order was cancelled by {cancelledModalData?.who}.
+              Your order was cancelled by {cancelledModalData?.who}.
             </Text>
             <BasicButton
               title="OK"
@@ -704,27 +718,24 @@ export default function CustomerDashboard({ sessionToken, socket }) {
                   placeholderTextColor={colors.textSecondary}
                 />
 
-                <Text style={styles.fieldLabel}>District</Text>
-                <View style={styles.pickerWrapper}>
-                  <Picker selectedValue={district} onValueChange={setDistrict}>
-                    {KARACHI_AREAS.map((area) => (
-                      <Picker.Item key={area} label={area} value={area} />
-                    ))}
-                  </Picker>
-                </View>
+                <AppDropdown
+                  label="District"
+                  selectedValue={district}
+                  onValueChange={setDistrict}
+                  placeholder="Select your district"
+                  options={KARACHI_AREAS.map(area => ({ label: area, value: area }))}
+                />
 
-                <Text style={styles.fieldLabel}>Gallons</Text>
-                <View style={styles.pickerWrapper}>
-                  <Picker selectedValue={gallons} onValueChange={handleGallonsChange}>
-                    {quantityPricing.map((option) => (
-                      <Picker.Item
-                        key={String(option.quantity_in_gallon)}
-                        label={String(option.quantity_in_gallon)}
-                        value={String(option.quantity_in_gallon)}
-                      />
-                    ))}
-                  </Picker>
-                </View>
+                <AppDropdown
+                  label="Gallons"
+                  selectedValue={gallons}
+                  onValueChange={handleGallonsChange}
+                  placeholder="Select quantity"
+                  options={quantityPricing.map(option => ({
+                    label: String(option.quantity_in_gallon),
+                    value: String(option.quantity_in_gallon)
+                  }))}
+                />
 
                 <Text style={styles.fieldLabel}>Price Offer</Text>
                 <TextInput
