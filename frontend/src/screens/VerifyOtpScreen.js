@@ -132,7 +132,7 @@ export default function VerifyOtpScreen({ route, navigation }) {
                     title={cooldownSeconds > 0 ? `Resend in ${cooldownSeconds}s` : 'Request New OTP'}
                     onPress={handleResendOtp}
                     disabled={loading || !canResendOtp}
-                    style={styles.secondaryButton}
+                    style={canResendOtp ? styles.button : styles.secondaryButton}
                 />
 
                 {loading ? (

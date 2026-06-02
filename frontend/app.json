@@ -16,10 +16,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#FFFFFF",
+        "foregroundImage": "./assets/logo.png"
       },
       "package": "com.msk.tankerdelivery"
     },
@@ -28,7 +26,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "ad48a066-c2b4-4502-bb2a-7a2acc03ed29"
+        "projectId": "de48406a-bb28-46f7-92d0-ffe802328300"
       }
     }
   }
