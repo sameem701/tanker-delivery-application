@@ -331,10 +331,6 @@ NODE_ENV=development
 # Database — PostgreSQL connection string
 DATABASE_URL=postgresql://user:password@host:5432/database
 
-# JWT (reserved for future use)
-JWT_SECRET=your_secure_jwt_secret_key
-JWT_EXPIRE=24h
-
 # CORS
 CORS_ORIGIN=*
 ```
