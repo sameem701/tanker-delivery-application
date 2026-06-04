@@ -613,6 +613,9 @@ To deploy your own instance:
 
 ### Frontend (EAS Build)
 
+> **📦 Download the latest Android APK:**
+> [https://expo.dev/accounts/expo_go12345/projects/pani-chahye/builds/43587a23-76e7-4a1f-b00e-5fd850fcbafa](https://expo.dev/accounts/expo_go12345/projects/pani-chahye/builds/43587a23-76e7-4a1f-b00e-5fd850fcbafa)
+
 The mobile app is built using [Expo Application Services (EAS)](https://expo.dev/eas):
 
 ```bash
