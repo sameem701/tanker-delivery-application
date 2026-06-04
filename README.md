@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="Pani Chahye Logo" width="180" />
+  <img src="frontend/assets/logo.png" alt="Pani Chahye Logo" width="180" />
 </p>
 
 <h1 align="center">🚰 Pani Chahye — Water Tanker Delivery Platform</h1>
@@ -657,6 +657,3 @@ This project is licensed under the [ISC License](https://opensource.org/licenses
 
 ---
 
-<p align="center">
-  Built with 💧 by MSK
-</p>
