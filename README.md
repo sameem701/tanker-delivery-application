@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="frontend/assets/logo.png" alt="Pani Chahye Logo" width="180" />
-</p>
-
-<h1 align="center">🚰 Pani Chahye — Water Tanker Delivery Platform</h1>
+<h1 align="center">Pani Chahye — Water Tanker Delivery Platform</h1>
 
 <p align="center">
   A full-stack, real-time water tanker delivery marketplace connecting <b>Customers</b>, <b>Suppliers</b>, and <b>Drivers</b> — built with React Native (Expo) and Node.js.
